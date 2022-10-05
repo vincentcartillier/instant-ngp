@@ -12,6 +12,7 @@
  *  @author Thomas Müller & Alex Evans, NVIDIA
  */
 
+#include <neural-graphics-primitives/common_device.cuh>
 #include <neural-graphics-primitives/testbed.h>
 #include <neural-graphics-primitives/thread_pool.h>
 #include <neural-graphics-primitives/nerf_loader.h>
@@ -316,11 +317,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("Reinhard", ETonemapCurve::Reinhard)
 		.export_values();
 
-	py::enum_<ECameraDistortionMode>(m, "CameraDistortionMode")
-		.value("None", ECameraDistortionMode::None)
-		.value("Iterative", ECameraDistortionMode::Iterative)
-		.value("FTheta", ECameraDistortionMode::FTheta)
-		.value("LatLong", ECameraDistortionMode::LatLong)
+	py::enum_<ELensMode>(m, "LensMode")
+		.value("Perspective", ELensMode::Perspective)
+		.value("OpenCV", ELensMode::OpenCV)
+		.value("FTheta", ELensMode::FTheta)
+		.value("LatLong", ELensMode::LatLong)
 		.export_values();
 
 	py::class_<BoundingBox>(m, "BoundingBox")
@@ -477,6 +478,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("fov_axis", &Testbed::m_fov_axis)
 		.def_readwrite("zoom", &Testbed::m_zoom)
 		.def_readwrite("screen_center", &Testbed::m_screen_center)
+		.def_readwrite("training_batch_size", &Testbed::m_training_batch_size)
 		.def("set_nerf_camera_matrix", &Testbed::set_nerf_camera_matrix)
 		.def("set_camera_to_training_view", &Testbed::set_camera_to_training_view)
 		.def("first_training_view", &Testbed::first_training_view)
@@ -526,11 +528,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("crop_box_corners", &Testbed::crop_box_corners, py::arg("nerf_space") = true)
 		;
 
-	py::class_<CameraDistortion> camera_distortion(m, "CameraDistortion");
-	camera_distortion
-		.def_readwrite("mode", &CameraDistortion::mode)
+	py::class_<Lens> lens(m, "Lens");
+	lens
+		.def_readwrite("mode", &Lens::mode)
 		.def_property_readonly("params", [](py::object& obj) {
-			CameraDistortion& o = obj.cast<CameraDistortion&>();
+			Lens& o = obj.cast<Lens&>();
 			return py::array{sizeof(o.params)/sizeof(o.params[0]), o.params, obj};
 		})
 		;
@@ -542,8 +544,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("rgb_activation", &Testbed::Nerf::rgb_activation)
 		.def_readwrite("density_activation", &Testbed::Nerf::density_activation)
 		.def_readwrite("sharpen", &Testbed::Nerf::sharpen)
-		.def_readwrite("render_with_camera_distortion", &Testbed::Nerf::render_with_camera_distortion)
-		.def_readwrite("render_distortion", &Testbed::Nerf::render_distortion)
+		// Legacy member: lens used to be called "camera_distortion"
+		.def_readwrite("render_with_camera_distortion", &Testbed::Nerf::render_with_lens_distortion)
+		.def_readwrite("render_with_lens_distortion", &Testbed::Nerf::render_with_lens_distortion)
+		.def_readwrite("render_distortion", &Testbed::Nerf::render_lens)
+		.def_readwrite("render_lens", &Testbed::Nerf::render_lens)
 		.def_readwrite("rendering_min_transmittance", &Testbed::Nerf::rendering_min_transmittance)
 		.def_readwrite("cone_angle_constant", &Testbed::Nerf::cone_angle_constant)
 		.def_readwrite("visualize_cameras", &Testbed::Nerf::visualize_cameras)
@@ -567,7 +572,9 @@ PYBIND11_MODULE(pyngp, m) {
 	py::class_<TrainingImageMetadata> metadata(m, "TrainingImageMetadata");
 	metadata
 		.def_readwrite("focal_length", &TrainingImageMetadata::focal_length)
-		.def_readwrite("camera_distortion", &TrainingImageMetadata::camera_distortion)
+		// Legacy member: lens used to be called "camera_distortion"
+		.def_readwrite("camera_distortion", &TrainingImageMetadata::lens)
+		.def_readwrite("lens", &TrainingImageMetadata::lens)
 		.def_readwrite("principal_point", &TrainingImageMetadata::principal_point)
 		.def_readwrite("rolling_shutter", &TrainingImageMetadata::rolling_shutter)
 		.def_readwrite("light_dir", &TrainingImageMetadata::light_dir)

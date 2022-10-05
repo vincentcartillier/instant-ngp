@@ -70,6 +70,7 @@ def parse_args():
     return parser.parse_args()
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     args = parse_args()
 
     args.mode = args.mode or mode_from_scene(args.scene) or mode_from_scene(args.load_snapshot)
@@ -143,7 +144,7 @@ if __name__ == "__main__":
     testbed.shall_train = args.train if args.gui else True
 
 
-    testbed.nerf.render_with_camera_distortion = True
+    testbed.nerf.render_with_lens_distortion = True
 
     network_stem = os.path.splitext(os.path.basename(network))[0]
     if args.mode == "sdf":
@@ -359,3 +360,4 @@ if __name__ == "__main__":
 
         os.system(f"ffmpeg -y -framerate {args.video_fps} -i tmp/%04d.jpg -c:v libx264 -pix_fmt yuv420p {args.video_output}")
         shutil.rmtree("tmp")
+

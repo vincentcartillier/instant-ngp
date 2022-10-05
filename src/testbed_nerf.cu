@@ -382,7 +382,7 @@ __global__ void mark_untrained_density_grid(const uint32_t n_elements,  float* _
 	float voxel_radius = 0.5f*SQRT3()*scalbnf(1.0f, level) / NERF_GRIDSIZE();
 	int count=0;
 	for (uint32_t j=0; j < n_training_images; ++j) {
-		if (metadata[j].camera_distortion.mode == ECameraDistortionMode::FTheta || metadata[j].camera_distortion.mode == ECameraDistortionMode::LatLong) {
+		if (metadata[j].lens.mode == ELensMode::FTheta || metadata[j].lens.mode == ELensMode::LatLong) {
 			// not supported for now
 			count++;
 			break;
@@ -672,17 +672,20 @@ __global__ void generate_nerf_network_inputs_at_current_position(const uint32_t 
 	network_input(i)->set_with_optional_extra_dims(warp_position(payloads[i].origin + dir * payloads[i].t, aabb), warp_direction(dir), warp_dt(MIN_CONE_STEPSIZE()), extra_dims, network_input.stride_in_bytes);
 }
 
-__global__ void compute_nerf_density(const uint32_t n_elements, Array4f* network_output, ENerfActivation rgb_activation, ENerfActivation density_activation, bool density_to_alpha) {
+__global__ void compute_nerf_rgba(const uint32_t n_elements, Array4f* network_output, ENerfActivation rgb_activation, ENerfActivation density_activation, float depth, bool density_as_alpha = false) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
 	Array4f rgba = network_output[i];
-	float density = network_to_density(rgba.w(), density_activation) / 100.0f;
+
+	float density = network_to_density(rgba.w(), density_activation);
 	float alpha = 1.f;
-	if (density_to_alpha)
-		rgba.w() = alpha = tcnn::clamp(1.f - __expf(-density), 0.0f, 1.0f);
-	else
+	if (density_as_alpha) {
 		rgba.w() = density;
+	} else {
+		rgba.w() = alpha = tcnn::clamp(1.f - __expf(-density * depth), 0.0f, 1.0f);
+	}
+
 	rgba.x() = network_to_rgb(rgba.x(), rgb_activation) * alpha;
 	rgba.y() = network_to_rgb(rgba.y(), rgb_activation) * alpha;
 	rgba.z() = network_to_rgb(rgba.z(), rgb_activation) * alpha;
@@ -1108,7 +1111,7 @@ __global__ void generate_training_samples_nerf(
 	const Vector2f focal_length = metadata[img].focal_length;
 	const Vector2f principal_point = metadata[img].principal_point;
 	const float* extra_dims = extra_dims_gpu + img * n_extra_dims;
-	const CameraDistortion camera_distortion = metadata[img].camera_distortion;
+	const Lens lens = metadata[img].lens;
 
 	const Matrix<float, 3, 4> xform = get_xform_given_rolling_shutter(training_xforms[img], metadata[img].rolling_shutter, xy, motionblur_time);
 
@@ -1122,7 +1125,7 @@ __global__ void generate_training_samples_nerf(
 		const Matrix<float, 3, 4> xform = get_xform_given_rolling_shutter(training_xforms[img], metadata[img].rolling_shutter, xy, 0.f);
 		Ray ray2;
 		ray2.o = xform.col(3);
-		ray2.d = f_theta_distortion(xy, principal_point, camera_distortion);
+		ray2.d = f_theta_distortion(xy, principal_point, lens);
 		ray2.d = (xform.block<3, 3>(0, 0) * ray2.d).normalized();
 		if (i==1000) {
 			printf("\n%d uv %0.3f,%0.3f pixel %0.2f,%0.2f transform from [%0.5f %0.5f %0.5f] to [%0.5f %0.5f %0.5f]\n"
@@ -1140,9 +1143,9 @@ __global__ void generate_training_samples_nerf(
 	} else {
 		// Rays need to be inferred from the camera matrix
 		ray_unnormalized.o = xform.col(3);
-		if (camera_distortion.mode == ECameraDistortionMode::FTheta) {
-			ray_unnormalized.d = f_theta_undistortion(xy - principal_point, camera_distortion.params, {0.f, 0.f, 1.f});
-		} else if (camera_distortion.mode == ECameraDistortionMode::LatLong) {
+		if (lens.mode == ELensMode::FTheta) {
+			ray_unnormalized.d = f_theta_undistortion(xy - principal_point, lens.params, {0.f, 0.f, 1.f});
+		} else if (lens.mode == ELensMode::LatLong) {
 			ray_unnormalized.d = latlong_to_dir(xy);
 		} else {
 			ray_unnormalized.d = {
@@ -1151,8 +1154,8 @@ __global__ void generate_training_samples_nerf(
 				1.0f,
 			};
 
-			if (camera_distortion.mode == ECameraDistortionMode::Iterative) {
-				iterative_camera_undistortion(camera_distortion.params, &ray_unnormalized.d.x(), &ray_unnormalized.d.y());
+			if (lens.mode == ELensMode::OpenCV) {
+				iterative_opencv_lens_undistortion(lens.params, &ray_unnormalized.d.x(), &ray_unnormalized.d.y());
 			}
 		}
 
@@ -1793,7 +1796,7 @@ __global__ void init_rays_with_payload_kernel_nerf(
 	Matrix3f render_aabb_to_local,
 	float plane_z,
 	float aperture_size,
-	CameraDistortion camera_distortion,
+	Lens lens,
 	const float* __restrict__ envmap_data,
 	const Vector2i envmap_resolution,
 	Array4f* __restrict__ framebuffer,
@@ -1835,7 +1838,7 @@ __global__ void init_rays_with_payload_kernel_nerf(
 		snap_to_pixel_centers,
 		plane_z,
 		aperture_size,
-		camera_distortion,
+		lens,
 		distortion_data,
 		distortion_resolution
 	);
@@ -1974,14 +1977,14 @@ void Testbed::NerfTracer::init_rays_from_camera(
 	const Matrix3f& render_aabb_to_local,
 	float plane_z,
 	float aperture_size,
-	const CameraDistortion& camera_distortion,
+	const Lens& lens,
 	const float* envmap_data,
 	const Vector2i& envmap_resolution,
 	const float* distortion_data,
 	const Vector2i& distortion_resolution,
 	Eigen::Array4f* frame_buffer,
 	float* depth_buffer,
-	uint8_t *grid,
+	uint8_t* grid,
 	int show_accel,
 	float cone_angle_constant,
 	ERenderMode render_mode,
@@ -2008,7 +2011,7 @@ void Testbed::NerfTracer::init_rays_from_camera(
 		render_aabb_to_local,
 		plane_z,
 		aperture_size,
-		camera_distortion,
+		lens,
 		envmap_data,
 		envmap_resolution,
 		frame_buffer,
@@ -2246,10 +2249,10 @@ void Testbed::render_nerf(CudaRenderBuffer& render_buffer, const Vector2i& max_r
 	}};
 
 	// Our motion vector code can't undo f-theta and grid distortions -- so don't render these if DLSS is enabled.
-	bool render_opencv_camera_distortion = m_nerf.render_with_camera_distortion && (!render_buffer.dlss() || m_nerf.render_distortion.mode == ECameraDistortionMode::Iterative);
-	bool render_grid_camera_distortion = m_nerf.render_with_camera_distortion && !render_buffer.dlss();
+	bool render_opencv_lens = m_nerf.render_with_lens_distortion && (!render_buffer.dlss() || m_nerf.render_lens.mode == ELensMode::OpenCV);
+	bool render_grid_distortion = m_nerf.render_with_lens_distortion && !render_buffer.dlss();
 
-	CameraDistortion camera_distortion = render_opencv_camera_distortion ? m_nerf.render_distortion : CameraDistortion{};
+	Lens lens = render_opencv_lens ? m_nerf.render_lens : Lens{};
 
 
 	m_nerf.tracer.init_rays_from_camera(
@@ -2269,10 +2272,10 @@ void Testbed::render_nerf(CudaRenderBuffer& render_buffer, const Vector2i& max_r
 		m_render_aabb_to_local,
 		plane_z,
 		m_aperture_size,
-		camera_distortion,
+		lens,
 		m_envmap.envmap->params_inference(),
 		m_envmap.resolution,
-		render_grid_camera_distortion ? m_distortion.map->params_inference() : nullptr,
+		render_grid_distortion ? m_distortion.map->params_inference() : nullptr,
 		m_distortion.resolution,
 		render_buffer.frame_buffer(),
 		render_buffer.depth_buffer(),
@@ -2330,7 +2333,7 @@ void Testbed::render_nerf(CudaRenderBuffer& render_buffer, const Vector2i& max_r
 
 		if (m_visualized_dimension == -1) {
 			m_network->inference(stream, positions_matrix, rgbsigma_matrix);
-			linear_kernel(compute_nerf_density, 0, stream, n_hit, m_nerf.vis_rgba.data(), m_nerf.rgb_activation, m_nerf.density_activation, true);
+			linear_kernel(compute_nerf_rgba, 0, stream, n_hit, m_nerf.vis_rgba.data(), m_nerf.rgb_activation, m_nerf.density_activation, 0.01f, false);
 		} else {
 			m_network->visualize_activation(stream, m_visualized_layer, m_visualized_dimension, positions_matrix, rgbsigma_matrix);
 		}
@@ -2381,8 +2384,8 @@ void Testbed::Nerf::Training::set_camera_intrinsics(int frame_idx, float fx, flo
 	auto& m = dataset.metadata[frame_idx];
 	if (cx < 0.f) cx = -cx; else cx = cx / m.resolution.x();
 	if (cy < 0.f) cy = -cy; else cy = cy / m.resolution.y();
-	ECameraDistortionMode mode = (k1 || k2 || p1 || p2) ? ECameraDistortionMode::Iterative : ECameraDistortionMode::None;
-	m.camera_distortion = { mode, k1, k2, p1, p2 };
+	ELensMode mode = (k1 || k2 || p1 || p2) ? ELensMode::OpenCV : ELensMode::Perspective;
+	m.lens = { mode, k1, k2, p1, p2 };
 	m.principal_point = { cx, cy };
 	m.focal_length = { fx, fy };
 	dataset.update_metadata(frame_idx, frame_idx + 1);
@@ -2547,7 +2550,7 @@ void Testbed::load_nerf_post() { // moved the second half of load_nerf here
 
 	// Uncomment the following line to see how the network learns distortion from scratch rather than
 	// starting from the distortion that's described by the training data.
-	// m_nerf.training.dataset.camera_distortion = {};
+	// m_nerf.training.dataset.camera = {};
 
 	// Perturbation of the training cameras -- for debugging the online extrinsics learning code
 	float perturb_amount = 0.0f;
@@ -2567,7 +2570,7 @@ void Testbed::load_nerf_post() { // moved the second half of load_nerf here
 	m_nerf.training.update_transforms();
 
 	if (!m_nerf.training.dataset.metadata.empty()) {
-		m_nerf.render_distortion = m_nerf.training.dataset.metadata[0].camera_distortion;
+		m_nerf.render_lens = m_nerf.training.dataset.metadata[0].lens;
 		m_screen_center = Eigen::Vector2f::Constant(1.f) - m_nerf.training.dataset.metadata[0].principal_point;
 	}
 
@@ -2730,7 +2733,7 @@ void Testbed::update_density_grid_mean_and_bitfield(cudaStream_t stream) {
 	}
 }
 
-void Testbed::Nerf::Training::Counters::prepare_for_training_steps(cudaStream_t stream) {
+void Testbed::NerfCounters::prepare_for_training_steps(cudaStream_t stream) {
 	numsteps_counter.enlarge(1);
 	numsteps_counter_compacted.enlarge(1);
 	loss.enlarge(rays_per_batch);
@@ -2739,7 +2742,7 @@ void Testbed::Nerf::Training::Counters::prepare_for_training_steps(cudaStream_t 
 	CUDA_CHECK_THROW(cudaMemsetAsync(loss.data(), 0, sizeof(float)*rays_per_batch, stream));
 }
 
-float Testbed::Nerf::Training::Counters::update_after_training(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
+float Testbed::NerfCounters::update_after_training(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
 	std::vector<uint32_t> counter_cpu(1);
 	std::vector<uint32_t> compacted_counter_cpu(1);
 	numsteps_counter.copy_to_host(counter_cpu);
@@ -2815,14 +2818,9 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		CUDA_CHECK_THROW(cudaMemsetAsync(envmap_gradient, 0, sizeof(float)*m_envmap.envmap->n_params(), stream));
 	}
 
-	train_nerf_step(
-		target_batch_size,
-		m_nerf.training.counters_rgb.rays_per_batch,
-		m_nerf.training.counters_rgb.numsteps_counter.data(),
-		m_nerf.training.counters_rgb.numsteps_counter_compacted.data(),
-		m_nerf.training.counters_rgb.loss.data(),
-		m_stream.get()
-	);
+
+	train_nerf_step(target_batch_size, m_nerf.training.counters_rgb, stream);
+
 
 	m_trainer->optimizer_step(stream, LOSS_SCALE);
 
@@ -3012,7 +3010,7 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 	}
 }
 
-void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_batch, uint32_t* counter, uint32_t* compacted_counter, float* loss, cudaStream_t stream) {
+void Testbed::train_nerf_step(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream) {
 	const uint32_t padded_output_width = m_network->padded_output_width();
 	const uint32_t max_samples = target_batch_size * 16; // Somewhat of a worst case
 	const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
@@ -3033,9 +3031,9 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		uint32_t // ray_counter
 	>(
 		stream, &alloc,
-		n_rays_per_batch,
-		n_rays_per_batch,
-		n_rays_per_batch * 2,
+		counters.rays_per_batch,
+		counters.rays_per_batch,
+		counters.rays_per_batch * 2,
 		max_samples * floats_per_coord,
 		max_samples,
 		std::max(target_batch_size, max_samples) * padded_output_width,
@@ -3060,10 +3058,10 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	uint32_t* ray_counter = std::get<10>(scratch);
 
 	uint32_t max_inference;
-	if (m_nerf.training.counters_rgb.measured_batch_size_before_compaction == 0) {
-		m_nerf.training.counters_rgb.measured_batch_size_before_compaction = max_inference = max_samples;
+	if (counters.measured_batch_size_before_compaction == 0) {
+		counters.measured_batch_size_before_compaction = max_inference = max_samples;
 	} else {
-		max_inference = next_multiple(std::min(m_nerf.training.counters_rgb.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
+		max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
 	}
 
 	GPUMatrix<float> coords_matrix((float*)coords, floats_per_coord, max_inference);
@@ -3075,12 +3073,12 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	GPUMatrix<network_precision_t> gradient_matrix(dloss_dmlp_out, padded_output_width, target_batch_size);
 
 	if (m_training_step == 0) {
-		m_nerf.training.counters_rgb.n_rays_total = 0;
+		counters.n_rays_total = 0;
 	}
 
-	uint32_t n_rays_total = m_nerf.training.counters_rgb.n_rays_total;
-	m_nerf.training.counters_rgb.n_rays_total += n_rays_per_batch;
-	m_nerf.training.n_rays_since_error_map_update += n_rays_per_batch;
+	uint32_t n_rays_total = counters.n_rays_total;
+	counters.n_rays_total += counters.rays_per_batch;
+	m_nerf.training.n_rays_since_error_map_update += counters.rays_per_batch;
 
 	// If we have an envmap, prepare its gradient buffer
 	float* envmap_gradient = m_nerf.training.train_envmap ? m_envmap.envmap->gradients() : nullptr;
@@ -3095,13 +3093,13 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter, 0, sizeof(uint32_t), stream));
 
 	linear_kernel(generate_training_samples_nerf, 0, stream,
-		n_rays_per_batch,
+		counters.rays_per_batch,
 		m_aabb,
 		max_inference,
 		n_rays_total,
 		m_rng,
 		ray_counter,
-		counter,
+		counters.numsteps_counter.data(),
 		ray_indices,
 		rays_unnormalized,
 		numsteps,
@@ -3137,7 +3135,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	}
 
 	linear_kernel(compute_loss_kernel_train_nerf, 0, stream,
-		n_rays_per_batch,
+		counters.rays_per_batch,
 		m_aabb,
 		n_rays_total,
 		m_rng,
@@ -3156,7 +3154,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		m_nerf.training.n_images_for_training,
 		m_nerf.training.dataset.metadata_gpu.data(),
 		mlp_out,
-		compacted_counter,
+		counters.numsteps_counter_compacted.data(),
 		ray_indices,
 		rays_unnormalized,
 		numsteps,
@@ -3165,7 +3163,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		dloss_dmlp_out,
 		m_nerf.training.loss_type,
 		m_nerf.training.depth_loss_type,
-		loss,
+		counters.loss.data(),
 		m_max_level_rand_training,
 		max_level_compacted,
 		m_nerf.rgb_activation,
@@ -3189,13 +3187,13 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
-		target_batch_size, padded_output_width, compacted_counter, dloss_dmlp_out
+		target_batch_size, padded_output_width, counters.numsteps_counter_compacted.data(), dloss_dmlp_out
 	);
 	fill_rollover<float><<<n_blocks_linear(target_batch_size * floats_per_coord), n_threads_linear, 0, stream>>>(
-		target_batch_size, floats_per_coord, compacted_counter, (float*)coords_compacted
+		target_batch_size, floats_per_coord, counters.numsteps_counter_compacted.data(), (float*)coords_compacted
 	);
 	fill_rollover<float><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
-		target_batch_size, 1, compacted_counter, max_level_compacted
+		target_batch_size, 1, counters.numsteps_counter_compacted.data(), max_level_compacted
 	);
 
 	bool train_camera = m_nerf.training.optimize_extrinsics || m_nerf.training.optimize_distortion || m_nerf.training.optimize_focal_length;
@@ -3211,7 +3209,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	if (train_extra_dims) {
 		// Compute extra-dim gradients
 		linear_kernel(compute_extra_dims_gradient_train_nerf, 0, stream,
-		n_rays_per_batch,
+			counters.rays_per_batch,
 			n_rays_total,
 			ray_counter,
 			m_nerf.training.extra_dims_gradient_gpu.data(),
@@ -3227,7 +3225,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	if (train_camera) {
 		// Compute camera gradients
 		linear_kernel(compute_cam_gradient_train_nerf, 0, stream,
-			n_rays_per_batch,
+			counters.rays_per_batch,
 			n_rays_total,
 			m_rng,
 			m_aabb,
@@ -3406,7 +3404,7 @@ GPUMemory<float> Testbed::get_density_on_grid(Vector3i res3d, const BoundingBox&
 	return density;
 }
 
-GPUMemory<Eigen::Array4f> Testbed::get_rgba_on_grid(Vector3i res3d, Eigen::Vector3f ray_dir, bool voxel_centers, bool density_to_alpha) {
+GPUMemory<Eigen::Array4f> Testbed::get_rgba_on_grid(Vector3i res3d, Eigen::Vector3f ray_dir, bool voxel_centers, float depth, bool density_as_alpha) {
 	const uint32_t n_elements = (res3d.x()*res3d.y()*res3d.z());
 	GPUMemory<Eigen::Array4f> rgba(n_elements);
 	GPUMemory<NerfCoordinate> positions(n_elements);
@@ -3427,7 +3425,7 @@ GPUMemory<Eigen::Array4f> Testbed::get_rgba_on_grid(Vector3i res3d, Eigen::Vecto
 		m_network->inference(m_stream.get(), positions_matrix, rgbsigma_matrix);
 
 		// convert network output to RGBA (in place)
-		linear_kernel(compute_nerf_density, 0, m_stream.get(), local_batch_size, rgba.data() + offset, m_nerf.rgb_activation, m_nerf.density_activation, density_to_alpha);
+		linear_kernel(compute_nerf_rgba, 0, m_stream.get(), local_batch_size, rgba.data() + offset, m_nerf.rgb_activation, m_nerf.density_activation, depth, density_as_alpha);
 	}
 	return rgba;
 }

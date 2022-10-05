@@ -272,8 +272,8 @@ void Testbed::set_camera_to_training_view(int trainview) {
 	m_camera = m_smoothed_camera = get_xform_given_rolling_shutter(m_nerf.training.transforms[trainview], m_nerf.training.dataset.metadata[trainview].rolling_shutter, Vector2f{0.5f, 0.5f}, 0.0f);
 	m_relative_focal_length = m_nerf.training.dataset.metadata[trainview].focal_length / (float)m_nerf.training.dataset.metadata[trainview].resolution[m_fov_axis];
 	m_scale = std::max((old_look_at - view_pos()).dot(view_dir()), 0.1f);
-	m_nerf.render_with_camera_distortion = true;
-	m_nerf.render_distortion = m_nerf.training.dataset.metadata[trainview].camera_distortion;
+	m_nerf.render_with_lens_distortion = true;
+	m_nerf.render_lens = m_nerf.training.dataset.metadata[trainview].lens;
 	m_screen_center = Vector2f::Constant(1.0f) - m_nerf.training.dataset.metadata[0].principal_point;
 }
 
@@ -380,8 +380,10 @@ void Testbed::dump_parameters_as_images(const T* params, const std::string& file
 		++layer_id;
 	}
 
-	std::string filename = fmt::format("{}-non-layer.exr", filename_base);
-	save_exr(params_cpu.data() + offset, non_layer_params_width, n_non_layer_params / non_layer_params_width, 1, 1, filename.c_str());
+	if (n_non_layer_params > 0) {
+		std::string filename = fmt::format("{}-non-layer.exr", filename_base);
+		save_exr(params_cpu.data() + offset, non_layer_params_width, n_non_layer_params / non_layer_params_width, 1, 1, filename.c_str());
+	}
 }
 
 template void Testbed::dump_parameters_as_images<__half>(const __half*, const std::string&);
@@ -699,24 +701,23 @@ void Testbed::imgui() {
 		}
 
 		if (m_testbed_mode == ETestbedMode::Nerf && ImGui::TreeNode("NeRF rendering options")) {
-			accum_reset |= ImGui::Checkbox("Apply lens distortion", &m_nerf.render_with_camera_distortion);
+			accum_reset |= ImGui::Checkbox("Apply lens distortion", &m_nerf.render_with_lens_distortion);
 
-			if (m_nerf.render_with_camera_distortion) {
-				accum_reset |= ImGui::Combo("Distortion mode", (int*)&m_nerf.render_distortion.mode, "None\0Iterative\0F-Theta\0LatLong\0");
-				if (m_nerf.render_distortion.mode == ECameraDistortionMode::Iterative) {
-					accum_reset |= ImGui::InputFloat("k1", &m_nerf.render_distortion.params[0], 0.f, 0.f, "%.5f");
-					accum_reset |= ImGui::InputFloat("k2", &m_nerf.render_distortion.params[1], 0.f, 0.f, "%.5f");
-					accum_reset |= ImGui::InputFloat("p1", &m_nerf.render_distortion.params[2], 0.f, 0.f, "%.5f");
-					accum_reset |= ImGui::InputFloat("p2", &m_nerf.render_distortion.params[3], 0.f, 0.f, "%.5f");
-				}
-				else if (m_nerf.render_distortion.mode == ECameraDistortionMode::FTheta) {
-					accum_reset |= ImGui::InputFloat("width", &m_nerf.render_distortion.params[5], 0.f, 0.f, "%.0f");
-					accum_reset |= ImGui::InputFloat("height", &m_nerf.render_distortion.params[6], 0.f, 0.f, "%.0f");
-					accum_reset |= ImGui::InputFloat("f_theta p0", &m_nerf.render_distortion.params[0], 0.f, 0.f, "%.5f");
-					accum_reset |= ImGui::InputFloat("f_theta p1", &m_nerf.render_distortion.params[1], 0.f, 0.f, "%.5f");
-					accum_reset |= ImGui::InputFloat("f_theta p2", &m_nerf.render_distortion.params[2], 0.f, 0.f, "%.5f");
-					accum_reset |= ImGui::InputFloat("f_theta p3", &m_nerf.render_distortion.params[3], 0.f, 0.f, "%.5f");
-					accum_reset |= ImGui::InputFloat("f_theta p4", &m_nerf.render_distortion.params[4], 0.f, 0.f, "%.5f");
+			if (m_nerf.render_with_lens_distortion) {
+				accum_reset |= ImGui::Combo("Lens mode", (int*)&m_nerf.render_lens.mode, "Perspective\0OpenCV\0F-Theta\0LatLong\0");
+				if (m_nerf.render_lens.mode == ELensMode::OpenCV) {
+					accum_reset |= ImGui::InputFloat("k1", &m_nerf.render_lens.params[0], 0.f, 0.f, "%.5f");
+					accum_reset |= ImGui::InputFloat("k2", &m_nerf.render_lens.params[1], 0.f, 0.f, "%.5f");
+					accum_reset |= ImGui::InputFloat("p1", &m_nerf.render_lens.params[2], 0.f, 0.f, "%.5f");
+					accum_reset |= ImGui::InputFloat("p2", &m_nerf.render_lens.params[3], 0.f, 0.f, "%.5f");
+				} else if (m_nerf.render_lens.mode == ELensMode::FTheta) {
+					accum_reset |= ImGui::InputFloat("width", &m_nerf.render_lens.params[5], 0.f, 0.f, "%.0f");
+					accum_reset |= ImGui::InputFloat("height", &m_nerf.render_lens.params[6], 0.f, 0.f, "%.0f");
+					accum_reset |= ImGui::InputFloat("f_theta p0", &m_nerf.render_lens.params[0], 0.f, 0.f, "%.5f");
+					accum_reset |= ImGui::InputFloat("f_theta p1", &m_nerf.render_lens.params[1], 0.f, 0.f, "%.5f");
+					accum_reset |= ImGui::InputFloat("f_theta p2", &m_nerf.render_lens.params[2], 0.f, 0.f, "%.5f");
+					accum_reset |= ImGui::InputFloat("f_theta p3", &m_nerf.render_lens.params[3], 0.f, 0.f, "%.5f");
+					accum_reset |= ImGui::InputFloat("f_theta p4", &m_nerf.render_lens.params[4], 0.f, 0.f, "%.5f");
 				}
 			}
 			ImGui::TreePop();
@@ -972,7 +973,7 @@ void Testbed::imgui() {
 
 			if (imgui_colored_button("Mesh it!", 0.4f)) {
 				marching_cubes(res3d, aabb, m_render_aabb_to_local, m_mesh.thresh);
-				m_nerf.render_with_camera_distortion = false;
+				m_nerf.render_with_lens_distortion = false;
 			}
 			if (m_mesh.indices.size()>0) {
 				ImGui::SameLine();
@@ -993,7 +994,10 @@ void Testbed::imgui() {
 				ImGui::SameLine();
 				if (imgui_colored_button("Save RGBA PNG sequence", 0.2f)) {
 					auto effective_view_dir = flip_y_and_z_axes ? Vector3f{0.0f, 1.0f, 0.0f} : Vector3f{0.0f, 0.0f, 1.0f};
-					GPUMemory<Array4f> rgba = get_rgba_on_grid(res3d, effective_view_dir, true, true);
+					// Depth of 0.01f is arbitrarily chosen to produce a visually interpretable range of alpha values.
+					// Alternatively, if the true transparency of a given voxel is desired, one could use the voxel size,
+					// the voxel diagonal, or some form of expected ray length through the voxel, given random directions.
+					GPUMemory<Array4f> rgba = get_rgba_on_grid(res3d, effective_view_dir, true, 0.01f);
 					auto dir = m_data_path / "rgba_slices";
 					if (!dir.exists()) {
 						fs::create_directory(dir);
@@ -1012,7 +1016,8 @@ void Testbed::imgui() {
 					for (int cascade = 0; (1<<cascade)<= m_aabb.diag().x()+0.5f; ++cascade) {
 						float radius = (1<<cascade) * 0.5f;
 						m_render_aabb = BoundingBox(Eigen::Vector3f::Constant(0.5f-radius), Eigen::Vector3f::Constant(0.5f+radius));
-						GPUMemory<Array4f> rgba = get_rgba_on_grid(res3d, effective_view_dir, true, false);
+						// Dump raw density values that the user can then convert to alpha as they please.
+						GPUMemory<Array4f> rgba = get_rgba_on_grid(res3d, effective_view_dir, true, 0.0f, true);
 						save_rgba_grid_to_raw_file(rgba, dir.str().c_str(), res3d, flip_y_and_z_axes, cascade);
 					}
 					m_render_aabb_to_local = old_local;
@@ -1134,6 +1139,7 @@ void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>
 	}
 
 }
+#endif //NGP_GUI
 
 Eigen::Matrix<float, 3, 4> Testbed::crop_box(bool nerf_space) const {
 	Eigen::Vector3f cen = m_render_aabb_to_local.transpose() * m_render_aabb.center();
@@ -1189,6 +1195,7 @@ std::vector<Eigen::Vector3f> Testbed::crop_box_corners(bool nerf_space) const {
 	return rv;
 }
 
+#ifdef NGP_GUI
 void Testbed::draw_visualizations(ImDrawList* list, const Matrix<float, 3, 4>& camera_matrix) {
 	// Visualize 3D cameras for SDF or NeRF use cases
 	if (m_testbed_mode != ETestbedMode::Image) {
@@ -2801,7 +2808,7 @@ __global__ void dlss_prep_kernel(
 	cudaSurfaceObject_t depth_surface,
 	cudaSurfaceObject_t mvec_surface,
 	cudaSurfaceObject_t exposure_surface,
-	CameraDistortion camera_distortion,
+	Lens lens,
 	const float view_dist,
 	const float prev_view_dist,
 	const Vector2f image_pos,
@@ -2848,7 +2855,7 @@ __global__ void dlss_prep_kernel(
 		parallax_shift,
 		snap_to_pixel_centers,
 		depth,
-		camera_distortion
+		lens
 	);
 
 	surf2Dwrite(make_float2(mvec.x(), mvec.y()), mvec_surface, x_orig * sizeof(float2), y_orig);
@@ -2986,7 +2993,7 @@ void Testbed::render_frame(const Matrix<float, 3, 4>& camera_matrix0, const Matr
 	if (render_buffer.dlss()) {
 		auto res = render_buffer.in_resolution();
 
-		bool distortion = m_testbed_mode == ETestbedMode::Nerf && m_nerf.render_with_camera_distortion;
+		bool distortion = m_testbed_mode == ETestbedMode::Nerf && m_nerf.render_with_lens_distortion;
 
 		const dim3 threads = { 16, 8, 1 };
 		const dim3 blocks = { div_round_up((uint32_t)res.x(), threads.x), div_round_up((uint32_t)res.y(), threads.y), 1 };
@@ -3005,7 +3012,7 @@ void Testbed::render_frame(const Matrix<float, 3, 4>& camera_matrix0, const Matr
 			render_buffer.dlss()->depth(),
 			render_buffer.dlss()->mvec(),
 			render_buffer.dlss()->exposure(),
-			distortion ? m_nerf.render_distortion : CameraDistortion{},
+			distortion ? m_nerf.render_lens : Lens{},
 			m_scale,
 			m_prev_scale,
 			m_image.pos,
@@ -3259,12 +3266,12 @@ void Testbed::load_snapshot(const std::string& filepath_string) {
 			density_grid[i] = (float)density_grid_fp16[i];
 		});
 
-
-		if (m_nerf.density_grid.size() != NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE() * (m_nerf.max_cascade + 1)) {
+		if (m_nerf.density_grid.size() == NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE() * (m_nerf.max_cascade + 1)) {
+			update_density_grid_mean_and_bitfield(nullptr);
+		} else if (m_nerf.density_grid.size() != 0) {
+			// A size of 0 indicates that the density grid was never populated, which is a valid state of a (yet) untrained model.
 			throw std::runtime_error{"Incompatible number of grid cascades."};
 		}
-
-		update_density_grid_mean_and_bitfield(nullptr);
 	}
 
 	m_network_config_path = filepath_string;
