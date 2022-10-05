@@ -2229,6 +2229,214 @@ Testbed::NetworkDims Testbed::network_dims() const {
 	}
 }
 
+
+
+
+
+void Testbed::reset_training_vars() {
+	//m_sdf.iou_decay = 0;
+
+	//m_rng = default_rng_t{m_seed};
+
+	// Start with a low rendering resolution and gradually ramp up
+	// m_render_ms.set(10000);
+
+	reset_accumulation();
+	m_nerf.training.counters_rgb.rays_per_batch = 1 << 12;
+	m_nerf.training.counters_rgb.measured_batch_size_before_compaction = 0;
+	m_nerf.training.n_steps_since_cam_update = 0;
+	m_nerf.training.n_steps_since_error_map_update = 0;
+	m_nerf.training.n_rays_since_error_map_update = 0;
+	m_nerf.training.n_steps_between_error_map_updates = 128;
+	// ####  ---- ### m_nerf.training.error_map.is_cdf_valid = false;
+	// m_nerf.training.density_grid_rng = default_rng_t{m_rng.next_uint()};
+
+	// m_nerf.training.reset_camera_extrinsics();
+
+	m_loss_graph_samples = 0;
+
+	// Default config
+    json config = m_network_config;
+
+	json& encoding_config = config["encoding"];
+	json& loss_config = config["loss"];
+	json& optimizer_config = config["optimizer"];
+	json& network_config = config["network"];
+
+	auto dims = network_dims();
+
+	if (m_testbed_mode == ETestbedMode::Nerf) {
+		m_nerf.training.loss_type = string_to_loss_type(loss_config.value("otype", "L2"));
+
+		// Some of the Nerf-supported losses are not supported by tcnn::Loss,
+		// so just create a dummy L2 loss there. The NeRF code path will bypass
+		// the tcnn::Loss in any case.
+		loss_config["otype"] = "L2";
+	}
+
+	// Automatically determine certain parameters if we're dealing with the (hash)grid encoding
+    if (to_lower(encoding_config.value("otype", "OneBlob")).find("grid") != std::string::npos) {
+		encoding_config["n_pos_dims"] = dims.n_pos;
+
+		const uint32_t n_features_per_level = encoding_config.value("n_features_per_level", 2u);
+
+		if (encoding_config.contains("n_features") && encoding_config["n_features"] > 0) {
+			m_num_levels = (uint32_t)encoding_config["n_features"] / n_features_per_level;
+		} else {
+			m_num_levels = encoding_config.value("n_levels", 16u);
+		}
+
+		m_level_stats.resize(m_num_levels);
+		m_first_layer_column_stats.resize(m_num_levels);
+
+		const uint32_t log2_hashmap_size = encoding_config.value("log2_hashmap_size", 15);
+
+		m_base_grid_resolution = encoding_config.value("base_resolution", 0);
+		if (!m_base_grid_resolution) {
+			m_base_grid_resolution = 1u << ((log2_hashmap_size) / dims.n_pos);
+			encoding_config["base_resolution"] = m_base_grid_resolution;
+		}
+
+		float desired_resolution = 2048.0f; // Desired resolution of the finest hashgrid level over the unit cube
+		if (m_testbed_mode == ETestbedMode::Image) {
+			desired_resolution = m_image.resolution.maxCoeff() / 2.0f;
+		} else if (m_testbed_mode == ETestbedMode::Volume) {
+			desired_resolution = m_volume.world2index_scale;
+		}
+
+		// Automatically determine suitable per_level_scale
+		m_per_level_scale = encoding_config.value("per_level_scale", 0.0f);
+		if (m_per_level_scale <= 0.0f && m_num_levels > 1) {
+			m_per_level_scale = std::exp(std::log(desired_resolution * (float)m_nerf.training.dataset.aabb_scale / (float)m_base_grid_resolution) / (m_num_levels-1));
+			encoding_config["per_level_scale"] = m_per_level_scale;
+		}
+
+		tlog::info()
+			<< "GridEncoding: "
+			<< " Nmin=" << m_base_grid_resolution
+			<< " b=" << m_per_level_scale
+			<< " F=" << n_features_per_level
+			<< " T=2^" << log2_hashmap_size
+			<< " L=" << m_num_levels
+			;
+	}
+
+	// -- -- -- m_loss.reset(create_loss<precision_t>(loss_config));
+	// -- -- -- m_optimizer.reset(create_optimizer<precision_t>(optimizer_config));
+
+	// -- -- -- // size_t n_encoding_params = 0;
+	// -- -- -- if (m_testbed_mode == ETestbedMode::Nerf) {
+	// -- -- -- 	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Array3f>(1e-3f, Array3f::Zero()));
+	// -- -- -- 	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Vector3f>(1e-4f, Vector3f::Zero()));
+	// -- -- -- 	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.n_images, RotationAdamOptimizer(1e-4f));
+	// -- -- -- 	m_nerf.training.cam_focal_length_offset = AdamOptimizer<Vector2f>(1e-5f);
+
+	// -- -- -- 	m_nerf.training.reset_extra_dims(m_rng);
+
+	// -- -- -- 	// json& dir_encoding_config = config["dir_encoding"];
+	// -- -- -- 	// json& rgb_network_config = config["rgb_network"];
+
+	// -- -- -- 	// uint32_t n_dir_dims = 3;
+	// -- -- -- 	// uint32_t n_extra_dims = m_nerf.training.dataset.n_extra_dims();
+	// -- -- -- 	// m_network = m_nerf_network = std::make_shared<NerfNetwork<precision_t>>(
+	// -- -- -- 	// 	dims.n_pos,
+	// -- -- -- 	// 	n_dir_dims,
+	// -- -- -- 	// 	n_extra_dims,
+	// -- -- -- 	// 	dims.n_pos + 1, // The offset of 1 comes from the dt member variable of NerfCoordinate. HACKY
+	// -- -- -- 	// 	encoding_config,
+	// -- -- -- 	// 	dir_encoding_config,
+	// -- -- -- 	// 	network_config,
+	// -- -- -- 	// 	rgb_network_config
+	// -- -- -- 	// );
+
+	// -- -- -- 	// m_encoding = m_nerf_network->encoding();
+	// -- -- -- 	// n_encoding_params = m_encoding->n_params() + m_nerf_network->dir_encoding()->n_params();
+
+	// -- -- -- 	// tlog::info()
+	// -- -- -- 	// 	<< "Density model: " << dims.n_pos
+	// -- -- -- 	// 	<< "--[" << std::string(encoding_config["otype"])
+	// -- -- -- 	// 	<< "]-->" << m_nerf_network->encoding()->padded_output_width()
+	// -- -- -- 	// 	<< "--[" << std::string(network_config["otype"])
+	// -- -- -- 	// 	<< "(neurons=" << (int)network_config["n_neurons"] << ",layers=" << ((int)network_config["n_hidden_layers"]+2) << ")"
+	// -- -- -- 	// 	<< "]-->" << 1
+	// -- -- -- 	// 	;
+
+	// -- -- -- 	// tlog::info()
+	// -- -- -- 	// 	<< "Color model:   " << n_dir_dims
+	// -- -- -- 	// 	<< "--[" << std::string(dir_encoding_config["otype"])
+	// -- -- -- 	// 	<< "]-->" << m_nerf_network->dir_encoding()->padded_output_width() << "+" << network_config.value("n_output_dims", 16u)
+	// -- -- -- 	// 	<< "--[" << std::string(rgb_network_config["otype"])
+	// -- -- -- 	// 	<< "(neurons=" << (int)rgb_network_config["n_neurons"] << ",layers=" << ((int)rgb_network_config["n_hidden_layers"]+2) << ")"
+	// -- -- -- 	// 	<< "]-->" << 3
+	// -- -- -- 	// 	;
+
+	// -- -- -- 	// // Create distortion map model
+	// -- -- -- 	// {
+	// -- -- -- 	// 	json& distortion_map_optimizer_config =  config.contains("distortion_map") && config["distortion_map"].contains("optimizer") ? config["distortion_map"]["optimizer"] : optimizer_config;
+
+	// -- -- -- 	// 	m_distortion.resolution = Vector2i::Constant(32);
+	// -- -- -- 	// 	if (config.contains("distortion_map") && config["distortion_map"].contains("resolution")) {
+	// -- -- -- 	// 		from_json(config["distortion_map"]["resolution"], m_distortion.resolution);
+	// -- -- -- 	// 	}
+	// -- -- -- 	// 	m_distortion.map = std::make_shared<TrainableBuffer<2, 2, float>>(m_distortion.resolution);
+	// -- -- -- 	// 	m_distortion.optimizer.reset(create_optimizer<float>(distortion_map_optimizer_config));
+	// -- -- -- 	// 	m_distortion.trainer = std::make_shared<Trainer<float, float>>(m_distortion.map, m_distortion.optimizer, std::shared_ptr<Loss<float>>{create_loss<float>(loss_config)}, m_seed);
+	// -- -- -- 	// }
+	// -- -- -- } else {
+	// -- -- -- 	// uint32_t alignment = network_config.contains("otype") && (equals_case_insensitive(network_config["otype"], "FullyFusedMLP") || equals_case_insensitive(network_config["otype"], "MegakernelMLP")) ? 16u : 8u;
+	// -- -- -- }
+
+    // -- -- -- // size_t n_network_params = m_network->n_params() - n_encoding_params;
+
+	// -- -- -- // tlog::info() << "  total_encoding_params=" << n_encoding_params << " total_network_params=" << n_network_params;
+
+	// -- -- -- m_trainer = std::make_shared<Trainer<float, precision_t, precision_t>>(m_network, m_optimizer, m_loss, m_seed);
+	// -- -- -- m_training_step = 0;
+	// -- -- -- m_training_start_time_point = std::chrono::steady_clock::now();
+
+	// -- -- -- // Create envmap model
+	// -- -- -- // {
+	// -- -- -- // 	json& envmap_loss_config = config.contains("envmap") && config["envmap"].contains("loss") ? config["envmap"]["loss"] : loss_config;
+	// -- -- -- // 	json& envmap_optimizer_config =  config.contains("envmap") && config["envmap"].contains("optimizer") ? config["envmap"]["optimizer"] : optimizer_config;
+
+	// -- -- -- // 	m_envmap.loss_type = string_to_loss_type(envmap_loss_config.value("otype", "L2"));
+
+	// -- -- -- // 	m_envmap.resolution = m_nerf.training.dataset.envmap_resolution;
+	// -- -- -- // 	m_envmap.envmap = std::make_shared<TrainableBuffer<4, 2, float>>(m_envmap.resolution);
+	// -- -- -- // 	m_envmap.optimizer.reset(create_optimizer<float>(envmap_optimizer_config));
+	// -- -- -- // 	m_envmap.trainer = std::make_shared<Trainer<float, float, float>>(m_envmap.envmap, m_envmap.optimizer, std::shared_ptr<Loss<float>>{create_loss<float>(envmap_loss_config)}, m_seed);
+
+	// -- -- -- // 	if (m_nerf.training.dataset.envmap_data.data()) {
+	// -- -- -- // 		m_envmap.trainer->set_params_full_precision(m_nerf.training.dataset.envmap_data.data(), m_nerf.training.dataset.envmap_data.size());
+	// -- -- -- // 	}
+	// -- -- -- // }
+
+	// -- -- -- // if (clear_density_grid) {
+	// -- -- -- // 	m_nerf.density_grid.memset(0);
+	// -- -- -- // 	m_nerf.density_grid_bitfield.memset(0);
+	// -- -- -- // }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void Testbed::reset_network(bool clear_density_grid) {
 	m_sdf.iou_decay = 0;
 
@@ -3022,6 +3230,7 @@ void Testbed::load_snapshot(const std::string& filepath_string) {
 	if (m_testbed_mode == ETestbedMode::Sdf) {
 		set_scale(m_bounding_radius * 1.5f);
 	} else if (m_testbed_mode == ETestbedMode::Nerf) {
+
 		if (snapshot["density_grid_size"] != NERF_GRIDSIZE()) {
 			throw std::runtime_error{"Incompatible grid size."};
 		}
@@ -3049,6 +3258,7 @@ void Testbed::load_snapshot(const std::string& filepath_string) {
 		parallel_for_gpu(density_grid_fp16.size(), [density_grid=m_nerf.density_grid.data(), density_grid_fp16=density_grid_fp16.data()] __device__ (size_t i) {
 			density_grid[i] = (float)density_grid_fp16[i];
 		});
+
 
 		if (m_nerf.density_grid.size() != NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE() * (m_nerf.max_cascade + 1)) {
 			throw std::runtime_error{"Incompatible number of grid cascades."};

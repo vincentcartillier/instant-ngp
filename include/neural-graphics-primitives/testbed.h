@@ -290,6 +290,7 @@ public:
 	bool reprojection_available() { return m_dlss; }
 	static ELossType string_to_loss_type(const std::string& str);
 	void reset_network(bool clear_density_grid = true);
+	void reset_training_vars();
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
 	void load_nerf();
 	void load_nerf_post();
@@ -621,7 +622,7 @@ public:
 			void update_transforms(int first = 0, int last = -1);
 
 #ifdef NGP_PYTHON
-			void set_image(int frame_idx, pybind11::array_t<float> img, pybind11::array_t<float> depth_img, float depth_scale);
+			void set_image(int frame_idx, pybind11::array_t<uint8_t> img, pybind11::array_t<float> depth_img, float depth_scale);
 #endif
 
 			void reset_camera_extrinsics();

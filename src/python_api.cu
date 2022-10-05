@@ -14,6 +14,7 @@
 
 #include <neural-graphics-primitives/testbed.h>
 #include <neural-graphics-primitives/thread_pool.h>
+#include <neural-graphics-primitives/nerf_loader.h>
 
 #include <json/json.hpp>
 
@@ -45,8 +46,18 @@ using namespace pybind11::literals; // to bring in the `_a` literal
 
 NGP_NAMESPACE_BEGIN
 
+std::vector<Eigen::Matrix<float, 3, 4> > NerfDataset::get_poses_ngp() {
+	std::vector<Eigen::Matrix<float, 3, 4> > result;
+    for (size_t i = 0; i < n_images; ++i) {
+        result.push_back (xforms[i].start);
+    }
+    return result;
+}
 
-void Testbed::Nerf::Training::set_image(int frame_idx, pybind11::array_t<float> img, pybind11::array_t<float> depth_img, float depth_scale) {
+void Testbed::Nerf::Training::set_image(int frame_idx,
+                                        pybind11::array_t<uint8_t> img,
+                                        pybind11::array_t<float> depth_img,
+                                        float depth_scale) {
 	if (frame_idx < 0 || frame_idx >= dataset.n_images) {
 		throw std::runtime_error{"Invalid frame index"};
 	}
@@ -63,7 +74,7 @@ void Testbed::Nerf::Training::set_image(int frame_idx, pybind11::array_t<float> 
 
 	py::buffer_info depth_buf = depth_img.request();
 
-	dataset.set_training_image(frame_idx, {img_buf.shape[1], img_buf.shape[0]}, (const void*)img_buf.ptr, (const float*)depth_buf.ptr, depth_scale, false, EImageDataType::Float, EDepthDataType::Float);
+	dataset.set_training_image(frame_idx, {img_buf.shape[1], img_buf.shape[0]}, (const void*)img_buf.ptr, (const float*)depth_buf.ptr, depth_scale, false, EImageDataType::Byte, EDepthDataType::Float);
 }
 
 void Testbed::override_sdf_training_data(py::array_t<float> points, py::array_t<float> distances) {
@@ -382,6 +393,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
+		.def("reset_training_vars", &Testbed::reset_training_vars,  "Reset training variables (does not re-init the networks !!).")
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.",
 			py::arg("due_to_camera_movement") = false,
 			py::arg("immediate_redraw") = true
@@ -569,13 +581,18 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("render_aabb", &NerfDataset::render_aabb)
 		.def_readonly("render_aabb_to_local", &NerfDataset::render_aabb_to_local)
 		.def_readonly("up", &NerfDataset::up)
-		.def_readonly("offset", &NerfDataset::offset)
+        //.def_readonly("offset", &NerfDataset::offset)
+		.def_readwrite("offset", &NerfDataset::offset)
 		.def_readonly("n_images", &NerfDataset::n_images)
 		.def_readonly("envmap_resolution", &NerfDataset::envmap_resolution)
-		.def_readonly("scale", &NerfDataset::scale)
+		//.def_readonly("scale", &NerfDataset::scale)
+		.def_readwrite("scale", &NerfDataset::scale)
 		.def_readonly("aabb_scale", &NerfDataset::aabb_scale)
 		.def_readonly("from_mitsuba", &NerfDataset::from_mitsuba)
 		.def_readonly("is_hdr", &NerfDataset::is_hdr)
+		.def_readwrite("wants_importance_sampling", &NerfDataset::wants_importance_sampling)
+		.def("get_poses_ngp", &NerfDataset::get_poses_ngp, "Return an array with all the camera poses as stored in NGP (Nx4x4)"
+        )
 		;
 
 	py::class_<Testbed::Nerf::Training>(nerf, "Training")

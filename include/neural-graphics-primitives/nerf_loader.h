@@ -22,6 +22,12 @@
 
 #include <vector>
 
+#ifdef NGP_PYTHON
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#endif
+
+
 NGP_NAMESPACE_BEGIN
 
 // how much to scale the scene by vs the original nerf dataset; we want to fit the thing in the unit cube
@@ -177,6 +183,12 @@ struct NerfDataset {
 		ray.d[1] = ray.d[2];
 		ray.d[2] = tmp;
 	}
+
+#ifdef NGP_PYTHON
+    // pybind11::array_t<float> get_poses_ngp();
+    // Eigen::Matrix<float, 3, 4> get_poses_ngp();
+    std::vector<Eigen::Matrix<float, 3, 4> > get_poses_ngp();
+#endif
 };
 
 NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount = 0.f);
