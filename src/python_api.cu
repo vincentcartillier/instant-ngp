@@ -353,6 +353,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("aabb_scale")=1, py::arg("is_hdr")=false)
 		.def("load_training_data", &Testbed::load_training_data, py::call_guard<py::gil_scoped_release>(), "Load training data from a given path.")
 		.def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
+		.def("expand_training_data", &Testbed::expand_training_data, py::arg("n_additional_images"), "Allocate memory for adding training data to existing dataset.")
 		// General control
 #ifdef NGP_GUI
 		.def("init_window", &Testbed::init_window, "Init a GLFW window that shows real-time progress and a GUI. 'second_window' creates a second copy of the output in its own window",

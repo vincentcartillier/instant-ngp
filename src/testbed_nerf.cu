@@ -2516,6 +2516,32 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 	m_training_data_available = true;
 }
 
+void Testbed::expand_training_data(size_t n_additional_images) {
+	
+    if (n_additional_images<=0) {
+		throw std::runtime_error{fmt::format(
+			"Trying to expand the training dataset with non-positive n_addtional_images argument. n_additional_images = {} ",
+			n_additional_images
+		)};
+	}
+    size_t prev_n_images = m_nerf.training.dataset.n_images;
+    size_t n_images = prev_n_images + n_additional_images;
+    m_nerf.training.dataset.n_images = n_images;
+    m_nerf.training.dataset.sharpness_data.enlarge(m_nerf.training.dataset.sharpness_resolution.x() * m_nerf.training.dataset.sharpness_resolution.y() *  n_images );
+	m_nerf.training.dataset.xforms.resize(n_images);
+	m_nerf.training.dataset.metadata.resize(n_images);
+	m_nerf.training.dataset.pixelmemory.resize(n_images);
+	m_nerf.training.dataset.depthmemory.resize(n_images);
+	m_nerf.training.dataset.raymemory.resize(n_images);
+	m_nerf.training.dataset.paths.resize(n_images);
+	for (size_t i = prev_n_images; i < n_images; ++i) {
+		m_nerf.training.dataset.xforms[i].start = Eigen::Matrix<float, 3, 4>::Identity();
+		m_nerf.training.dataset.xforms[i].end = Eigen::Matrix<float, 3, 4>::Identity();
+	}
+	
+	load_nerf_post();
+}
+
 void Testbed::load_nerf_post() { // moved the second half of load_nerf here
 	m_nerf.rgb_activation = m_nerf.training.dataset.is_hdr ? ENerfActivation::Exponential : ENerfActivation::Logistic;
 

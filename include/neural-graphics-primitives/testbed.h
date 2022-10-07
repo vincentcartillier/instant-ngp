@@ -293,6 +293,7 @@ public:
 	void reset_network(bool clear_density_grid = true);
 	void reset_training_vars();
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
+	void expand_training_data(size_t n_additional_images);
 	void load_nerf();
 	void load_nerf_post();
 	void load_mesh();
