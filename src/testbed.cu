@@ -2775,14 +2775,18 @@ void Testbed::train(uint32_t batch_size) {
 		ScopeGuard timing_guard{[&]() {
 			m_training_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count());
 		}};
-
-		switch (m_testbed_mode) {
-			case ETestbedMode::Nerf:   train_nerf(batch_size, get_loss_scalar, m_stream.get()); break;
-			case ETestbedMode::Sdf:    train_sdf(batch_size, get_loss_scalar, m_stream.get()); break;
-			case ETestbedMode::Image:  train_image(batch_size, get_loss_scalar, m_stream.get()); break;
-			case ETestbedMode::Volume: train_volume(batch_size, get_loss_scalar, m_stream.get()); break;
-			default: throw std::runtime_error{"Invalid training mode."};
-		}
+        
+        if (m_is_slam_mode) {
+		    train_nerf_slam(batch_size, get_loss_scalar, m_stream.get());
+        } else {
+		    switch (m_testbed_mode) {
+		    	case ETestbedMode::Nerf:   train_nerf(batch_size, get_loss_scalar, m_stream.get()); break;
+		    	case ETestbedMode::Sdf:    train_sdf(batch_size, get_loss_scalar, m_stream.get()); break;
+		    	case ETestbedMode::Image:  train_image(batch_size, get_loss_scalar, m_stream.get()); break;
+		    	case ETestbedMode::Volume: train_volume(batch_size, get_loss_scalar, m_stream.get()); break;
+		    	default: throw std::runtime_error{"Invalid training mode."};
+		    }
+        }
 
 		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
 	}

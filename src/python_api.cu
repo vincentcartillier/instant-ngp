@@ -451,6 +451,7 @@ PYBIND11_MODULE(pyngp, m) {
 
 	// Interesting members.
 	testbed
+		.def_readwrite("is_slam_mode", &Testbed::m_is_slam_mode)
 		.def_readwrite("dynamic_res", &Testbed::m_dynamic_res)
 		.def_readwrite("dynamic_res_target_fps", &Testbed::m_dynamic_res_target_fps)
 		.def_readwrite("fixed_res_factor", &Testbed::m_fixed_res_factor)
@@ -606,6 +607,8 @@ PYBIND11_MODULE(pyngp, m) {
 	py::class_<Testbed::Nerf::Training>(nerf, "Training")
 		.def_readwrite("random_bg_color", &Testbed::Nerf::Training::random_bg_color)
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
+		.def_readwrite("n_images_for_training_slam", &Testbed::Nerf::Training::n_images_for_training_slam)
+		.def_readwrite("idx_images_for_training_slam", &Testbed::Nerf::Training::idx_images_for_training_slam)
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
 		.def_readwrite("depth_loss_type", &Testbed::Nerf::Training::depth_loss_type)

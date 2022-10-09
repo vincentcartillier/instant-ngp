@@ -69,6 +69,8 @@ public:
 	void load_training_data(const std::string& data_path);
 	void clear_training_data();
 
+    bool m_is_slam_mode = false; // Turn this on to train Nerf in SLAM mode
+
 	using distance_fun_t = std::function<void(uint32_t, const tcnn::GPUMemory<Eigen::Vector3f>&, tcnn::GPUMemory<float>&, cudaStream_t)>;
 	using normals_fun_t = std::function<void(uint32_t, const tcnn::GPUMemory<Eigen::Vector3f>&, tcnn::GPUMemory<Eigen::Vector3f>&, cudaStream_t)>;
 
@@ -343,6 +345,8 @@ public:
 
 	void train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	void train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 	void train_sdf(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_image(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void set_train(bool mtrain);
@@ -539,11 +543,16 @@ public:
 			int n_images_for_training = 0; // how many images to train from, as a high watermark compared to the dataset size
 			int n_images_for_training_prev = 0; // how many images we saw last time we updated the density grid
 
+            int n_images_for_training_slam = 0; // how many images to train from, as a high watermark compared to the dataset size
+            std::vector<uint32_t> idx_images_for_training_slam;
+	        tcnn::GPUMemory<uint32_t> idx_images_for_training_slam_gpu;
+
 			struct ErrorMap {
 				tcnn::GPUMemory<float> data;
 				tcnn::GPUMemory<float> cdf_x_cond_y;
 				tcnn::GPUMemory<float> cdf_y;
 				tcnn::GPUMemory<float> cdf_img;
+				tcnn::GPUMemory<float> cdf_img_local;
 				std::vector<float> pmf_img_cpu;
 				Eigen::Vector2i resolution = {16, 16};
 				Eigen::Vector2i cdf_resolution = {16, 16};
