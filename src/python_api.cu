@@ -394,6 +394,7 @@ PYBIND11_MODULE(pyngp, m) {
 		)
 		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
+		.def("track_pose", &Testbed::track_pose, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of tracking steps.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
 		.def("reset_training_vars", &Testbed::reset_training_vars,  "Reset training variables (does not re-init the networks !!).")
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.",
@@ -609,6 +610,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
 		.def_readwrite("n_images_for_training_slam", &Testbed::Nerf::Training::n_images_for_training_slam)
 		.def_readwrite("idx_images_for_training_slam", &Testbed::Nerf::Training::idx_images_for_training_slam)
+		.def_readwrite("indice_image_for_tracking_pose", &Testbed::Nerf::Training::indice_image_for_tracking_pose)
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
 		.def_readwrite("depth_loss_type", &Testbed::Nerf::Training::depth_loss_type)

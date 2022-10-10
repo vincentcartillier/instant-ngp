@@ -347,7 +347,12 @@ public:
 	void train_nerf_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 	void train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
-	void train_sdf(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+
+    void track_pose(uint32_t batch_size);
+	void track_pose_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void track_pose_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+
+    void train_sdf(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_image(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void set_train(bool mtrain);
 
@@ -546,6 +551,9 @@ public:
             int n_images_for_training_slam = 0; // how many images to train from, as a high watermark compared to the dataset size
             std::vector<uint32_t> idx_images_for_training_slam;
 	        tcnn::GPUMemory<uint32_t> idx_images_for_training_slam_gpu;
+
+            uint32_t indice_image_for_tracking_pose;
+            tcnn::GPUMemory<uint32_t> indice_image_for_tracking_pose_gpu;
 
 			struct ErrorMap {
 				tcnn::GPUMemory<float> data;

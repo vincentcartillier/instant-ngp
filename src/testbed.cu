@@ -2796,6 +2796,52 @@ void Testbed::train(uint32_t batch_size) {
 	}
 }
 
+
+
+void Testbed::track_pose(uint32_t batch_size) {
+	if (!m_training_data_available) {
+		m_train = false;
+		return;
+	}
+
+	if (!m_dlss) {
+		// No immediate redraw necessary
+		reset_accumulation(false, false);
+	}
+
+	// Find leaf optimizer and update its settings
+	json* leaf_optimizer_config = &m_network_config["optimizer"];
+	while (leaf_optimizer_config->contains("nested")) {
+		leaf_optimizer_config = &(*leaf_optimizer_config)["nested"];
+	}
+	(*leaf_optimizer_config)["optimize_matrix_params"] = false;
+	(*leaf_optimizer_config)["optimize_non_matrix_params"] = false;
+	m_optimizer->update_hyperparams(m_network_config["optimizer"]);
+
+	bool get_loss_scalar = m_training_step % 16 == 0;
+
+	{
+		auto start = std::chrono::steady_clock::now();
+		ScopeGuard timing_guard{[&]() {
+			m_training_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count());
+		}};
+        
+		track_pose_nerf_slam(batch_size, get_loss_scalar, m_stream.get());
+
+		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
+	}
+
+	if (get_loss_scalar) {
+		update_loss_graph();
+	}
+}
+
+
+
+
+
+
+
 Vector2f Testbed::calc_focal_length(const Vector2i& resolution, int fov_axis, float zoom) const {
 	return m_relative_focal_length * resolution[fov_axis] * zoom;
 }
