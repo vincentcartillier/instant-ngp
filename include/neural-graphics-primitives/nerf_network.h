@@ -28,6 +28,24 @@
 
 NGP_NAMESPACE_BEGIN
 
+
+template <typename T>
+__global__ void dummy(
+	const uint32_t n_elements,
+	const uint32_t stride,
+	T* __restrict__ a
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_elements) return;
+
+	const uint32_t elem_idx = i / stride;
+
+    if (elem_idx >= (stride-2)){
+	    a[i] = 0;
+    }
+}
+
+
 template <typename T>
 __global__ void extract_density(
 	const uint32_t n_elements,
@@ -78,6 +96,8 @@ class NerfNetwork : public tcnn::Network<float, T> {
 public:
 	using json = nlohmann::json;
 
+    bool m_render_blurry;
+
 	NerfNetwork(uint32_t n_pos_dims, uint32_t n_dir_dims, uint32_t n_extra_dims, uint32_t dir_offset, const json& pos_encoding, const json& dir_encoding, const json& density_network, const json& rgb_network) : m_n_pos_dims{n_pos_dims}, m_n_dir_dims{n_dir_dims}, m_dir_offset{dir_offset}, m_n_extra_dims{n_extra_dims} {
 		m_pos_encoding.reset(tcnn::create_encoding<T>(n_pos_dims, pos_encoding, density_network.contains("otype") && (tcnn::equals_case_insensitive(density_network["otype"], "FullyFusedMLP") || tcnn::equals_case_insensitive(density_network["otype"], "MegakernelMLP")) ? 16u : 8u));
 		uint32_t rgb_alignment = tcnn::minimum_alignment(rgb_network);
@@ -96,6 +116,8 @@ public:
 		local_rgb_network_config["n_input_dims"] = m_rgb_network_input_width;
 		local_rgb_network_config["n_output_dims"] = 3;
 		m_rgb_network.reset(tcnn::create_network<T>(local_rgb_network_config));
+
+        m_render_blurry=false;
 	}
 
 	virtual ~NerfNetwork() { }
@@ -108,12 +130,22 @@ public:
 		tcnn::GPUMatrixDynamic<T> density_network_output = rgb_network_input.slice_rows(0, m_density_network->padded_output_width());
 		tcnn::GPUMatrixDynamic<T> rgb_network_output{output.data(), m_rgb_network->padded_output_width(), batch_size, output.layout()};
 
-		m_pos_encoding->inference_mixed_precision(
+        //input dim = 7 (3 into pos encoding)
+
+        m_pos_encoding->inference_mixed_precision(
 			stream,
 			input.slice_rows(0, m_pos_encoding->input_width()),
 			density_network_input,
 			use_inference_params
 		);
+
+        if (m_render_blurry==true) {
+            tcnn::linear_kernel(dummy<T>, 0, stream,
+		    	batch_size*density_network_input.m(),
+                density_network_input.m(),
+                density_network_input.data()
+		    );
+        }
 
 		m_density_network->inference_mixed_precision(stream, density_network_input, density_network_output, use_inference_params);
 
@@ -439,6 +471,11 @@ public:
 		);
 		offset += m_dir_encoding->n_params();
 	}
+
+	void set_render_blurry(bool render_blurry) {
+        m_render_blurry = render_blurry;
+		tlog::info() << "Is network blurry? " << m_render_blurry;
+    }
 
 	size_t n_params() const override {
 		return m_pos_encoding->n_params() + m_density_network->n_params() + m_dir_encoding->n_params() + m_rgb_network->n_params();
