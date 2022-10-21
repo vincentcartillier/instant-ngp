@@ -333,6 +333,7 @@ public:
 		tcnn::GPUMemory<uint32_t> numsteps_counter; // number of steps each ray took
 		tcnn::GPUMemory<uint32_t> numsteps_counter_compacted; // number of steps each ray took
 		tcnn::GPUMemory<float> loss;
+		tcnn::GPUMemory<float> loss_depth;
 
 		uint32_t rays_per_batch = 1<<12;
 		uint32_t n_rays_total = 0;
@@ -340,7 +341,7 @@ public:
 		uint32_t measured_batch_size_before_compaction = 0;
 
 		void prepare_for_training_steps(cudaStream_t stream);
-		float update_after_training(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+		std::vector<float> update_after_training(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream, bool get_depth_loss_scalar=false);
 	};
 
 	void train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -348,9 +349,20 @@ public:
 	void train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 
+    float m_tracking_sigma_gaussian_kernel=5.f;
+    std::vector<float> make_gaussian_kernel_debug(const uint32_t kernel_size, const float sigma);
+    // void track_pose_opti(uint32_t batch_size);
+	void track_pose_nerf_slam_opti(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void track_pose_nerf_slam_step_opti(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+    uint32_t m_track_pose_nerf_num_rays_in_tracking_step=0;
+    uint32_t m_track_pose_nerf_num_super_rays_targeted_in_tracking_step=0;
+
+    void track_pose_naive(uint32_t batch_size);
+	void track_pose_naive_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void track_pose_naive_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
     void track_pose(uint32_t batch_size);
-	void track_pose_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
-	void track_pose_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	// void track_pose_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	// void track_pose_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 
     void train_sdf(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_image(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -426,6 +438,8 @@ public:
 	void compute_and_save_marching_cubes_mesh(const char* filename, Eigen::Vector3i res3d = Eigen::Vector3i::Constant(128), BoundingBox aabb = {}, float thresh = 2.5f, bool unwrap_it = false);
 	Eigen::Vector3i compute_and_save_png_slices(const char* filename, int res, BoundingBox aabb = {}, float thresh = 2.5f, float density_range = 4.f, bool flip_y_and_z_axes = false);
 
+    void set_nerf_network_render_blurry(bool render_blurry = false);
+
 	////////////////////////////////////////////////////////////////
 	// marching cubes related state
 	struct MeshState {
@@ -473,6 +487,16 @@ public:
 	int m_max_spp = 0;
 	ETestbedMode m_testbed_mode = ETestbedMode::Sdf;
 	bool m_max_level_rand_training = false;
+
+    // Tracking related vars
+    uint32_t m_tracking_kernel_window_size=5;
+    uint32_t m_sample_away_from_border_margin_w=0;
+    uint32_t m_sample_away_from_border_margin_h=0;
+    float m_tracking_loss=0.f;
+    float m_tracking_loss_depth=0.f;
+
+    float m_mapping_loss=0.f;
+    float m_mapping_loss_depth=0.f;
 
 	// Rendering stuff
 	Eigen::Vector2i m_window_res = Eigen::Vector2i::Constant(0);
@@ -597,15 +621,22 @@ public:
 			float extrinsic_l2_reg = 1e-4f;
 			float extrinsic_learning_rate = 1e-3f;
 
+            float extrinsic_learning_rate_pos = 1e-3f;
+			float extrinsic_learning_rate_rot = 1e-3f;
+			bool separate_pos_and_rot_lr = true;
+
 			float intrinsic_l2_reg = 1e-4f;
 			float exposure_l2_reg = 0.0f;
 
 			NerfCounters counters_rgb;
+			NerfCounters counters_rgb_track;
 
 			bool random_bg_color = true;
 			bool linear_colors = false;
 			ELossType loss_type = ELossType::L2;
 			ELossType depth_loss_type = ELossType::L1;
+			ELossType track_loss_type = ELossType::L2;
+			ELossType track_depth_loss_type = ELossType::L1;
 			bool snap_to_pixel_centers = true;
 			bool train_envmap = false;
 
@@ -857,8 +888,10 @@ public:
 	float m_histo_scale = 1.f;
 
 	uint32_t m_training_step = 0;
+	uint32_t m_training_step_track = 0;
 	uint32_t m_training_batch_size = 1 << 18;
 	Ema m_loss_scalar = {EEmaType::Time, 100};
+	Ema m_loss_scalar_track = {EEmaType::Time, 100};
 	std::vector<float> m_loss_graph = std::vector<float>(256, 0.0f);
 	size_t m_loss_graph_samples = 0;
 

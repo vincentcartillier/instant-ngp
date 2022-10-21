@@ -214,6 +214,7 @@ endif()
 ###############################################################################
 
 list(APPEND NGP_DEFINITIONS -DNGP_VERSION="${NGP_VERSION}")
+list(APPEND NGP_INCLUDE_DIRECTORIES "src")
 list(APPEND NGP_INCLUDE_DIRECTORIES "include")
 if (NOT MSVC)
 	list(APPEND NGP_LIBRARIES ${CMAKE_DL_LIBS})
@@ -228,6 +229,7 @@ list(APPEND NGP_SOURCES
 	src/testbed.cu
 	src/testbed_image.cu
 	src/testbed_nerf.cu
+	src/testbed_nerf_tracking.cu
 	src/testbed_sdf.cu
 	src/testbed_volume.cu
 	src/thread_pool.cpp
@@ -297,6 +299,9 @@ target_link_libraries(ngp PUBLIC ${NGP_LIBRARIES} tiny-cuda-nn)
 
 add_executable(testbed src/main.cu)
 target_link_libraries(testbed PRIVATE ngp)
+
+add_executable(debug src/debug.cu)
+target_link_libraries(debug PRIVATE ngp)
 
 # Copy DLSS shared libraries
 if (NGP_VULKAN)

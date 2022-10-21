@@ -396,7 +396,6 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
 		.def("track_pose", &Testbed::track_pose, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of tracking steps.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
-		.def("reset_training_vars", &Testbed::reset_training_vars,  "Reset training variables (does not re-init the networks !!).")
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.",
 			py::arg("due_to_camera_movement") = false,
 			py::arg("immediate_redraw") = true
@@ -448,10 +447,23 @@ PYBIND11_MODULE(pyngp, m) {
 			"`thresh` is the density threshold; use 0 for SDF; 2.5 works well for NeRF. "
 			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
 		)
+		.def("set_nerf_network_render_blurry", &Testbed::set_nerf_network_render_blurry,
+			py::arg("render_blurry")
+        )
 		;
 
 	// Interesting members.
 	testbed
+		.def_readonly("tracking_loss", &Testbed::m_tracking_loss)
+		.def_readonly("tracking_loss_depth", &Testbed::m_tracking_loss_depth)
+		.def_readonly("mapping_loss", &Testbed::m_mapping_loss)
+		.def_readonly("mapping_loss_depth", &Testbed::m_mapping_loss_depth)
+		.def_readwrite("tracking_sigma", &Testbed::m_tracking_sigma_gaussian_kernel)
+		.def_readonly("num_rays_taken_in_tracking_step", &Testbed::m_track_pose_nerf_num_rays_in_tracking_step)
+		.def_readonly("num_super_rays_targeted_in_tracking_step", &Testbed::m_track_pose_nerf_num_super_rays_targeted_in_tracking_step)
+		.def_readwrite("tracking_kernel_window_size", &Testbed::m_tracking_kernel_window_size)
+		.def_readwrite("tracking_border_margin_W", &Testbed::m_sample_away_from_border_margin_w)
+		.def_readwrite("tracking_border_margin_H", &Testbed::m_sample_away_from_border_margin_h)
 		.def_readwrite("is_slam_mode", &Testbed::m_is_slam_mode)
 		.def_readwrite("dynamic_res", &Testbed::m_dynamic_res)
 		.def_readwrite("dynamic_res_target_fps", &Testbed::m_dynamic_res_target_fps)
@@ -541,6 +553,11 @@ PYBIND11_MODULE(pyngp, m) {
 		;
 
 
+	py::class_<Testbed::NerfCounters> nerf_counter(testbed, "NerfCounters");
+    nerf_counter
+        .def_readwrite("rays_per_batch", &Testbed::NerfCounters::rays_per_batch)
+        ;
+
 	py::class_<Testbed::Nerf> nerf(testbed, "Nerf");
 	nerf
 		.def_readonly("training", &Testbed::Nerf::training)
@@ -606,6 +623,7 @@ PYBIND11_MODULE(pyngp, m) {
 		;
 
 	py::class_<Testbed::Nerf::Training>(nerf, "Training")
+		.def_readonly("counters_rgb_track", &Testbed::Nerf::Training::counters_rgb_track)
 		.def_readwrite("random_bg_color", &Testbed::Nerf::Training::random_bg_color)
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
 		.def_readwrite("n_images_for_training_slam", &Testbed::Nerf::Training::n_images_for_training_slam)
@@ -614,6 +632,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
 		.def_readwrite("depth_loss_type", &Testbed::Nerf::Training::depth_loss_type)
+		.def_readwrite("track_loss_type", &Testbed::Nerf::Training::track_loss_type)
+		.def_readwrite("track_depth_loss_type", &Testbed::Nerf::Training::track_depth_loss_type)
 		.def_readwrite("snap_to_pixel_centers", &Testbed::Nerf::Training::snap_to_pixel_centers)
 		.def_readwrite("optimize_extrinsics", &Testbed::Nerf::Training::optimize_extrinsics)
 		.def_readwrite("optimize_extra_dims", &Testbed::Nerf::Training::optimize_extra_dims)
@@ -656,6 +676,9 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("depth_scale")=1.0f,
 			"set one of the training images. must be a floating point numpy array of (H,W,C) with 4 channels; linear color space; W and H must match image size of the rest of the dataset"
 		)
+		.def_readwrite("extrinsic_learning_rate_pos", &Testbed::Nerf::Training::extrinsic_learning_rate_pos)
+		.def_readwrite("extrinsic_learning_rate_rot", &Testbed::Nerf::Training::extrinsic_learning_rate_rot)
+		.def_readwrite("separate_pos_and_rot_lr", &Testbed::Nerf::Training::separate_pos_and_rot_lr)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

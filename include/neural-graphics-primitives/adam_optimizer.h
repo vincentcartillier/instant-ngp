@@ -52,6 +52,10 @@ public:
 		m_hparams.learning_rate = lr;
 	}
 
+    float get_learning_rate() {
+		return m_hparams.learning_rate;
+	}
+
 	T& variable() {
 		return m_state.variable;
 	}
@@ -130,6 +134,10 @@ public:
 
 	void set_learning_rate(float lr) {
 		m_hparams.learning_rate = lr;
+	}
+
+    float get_learning_rate() {
+		return m_hparams.learning_rate;
 	}
 
 	const Eigen::Vector3f& variable() const {
