@@ -495,6 +495,9 @@ public:
     float m_tracking_loss=0.f;
     float m_tracking_loss_depth=0.f;
 
+    float m_tracking_pos_gradient_norm=0.f;
+    float m_tracking_rot_gradient_norm=0.f;
+
     float m_mapping_loss=0.f;
     float m_mapping_loss_depth=0.f;
 
@@ -508,7 +511,14 @@ public:
 	float m_prev_scale = 1.0;
 	float m_aperture_size = 0.0f;
 	Eigen::Vector2f m_relative_focal_length = Eigen::Vector2f::Ones();
-	uint32_t m_fov_axis = 1;
+
+    Eigen::Vector2f m_manually_set_focal_length = Eigen::Vector2f::Constant(-1.f);
+    void manually_set_focal_length_for_rendering(const float fx, const float fy);
+
+    Eigen::Vector2f m_manually_set_screen_center = Eigen::Vector2f::Constant(-1.f);
+    void manually_set_screen_center_for_rendering(const float cx, const float cy);
+
+    uint32_t m_fov_axis = 1;
 	float m_zoom = 1.f; // 2d zoom factor (for insets?)
 	Eigen::Vector2f m_screen_center = Eigen::Vector2f::Constant(0.5f); // center of 2d zoom
 
@@ -574,6 +584,7 @@ public:
 
             int n_images_for_training_slam = 0; // how many images to train from, as a high watermark compared to the dataset size
             std::vector<uint32_t> idx_images_for_training_slam;
+            std::vector<uint32_t> idx_images_for_training_slam_pose;
 	        tcnn::GPUMemory<uint32_t> idx_images_for_training_slam_gpu;
 
             uint32_t indice_image_for_tracking_pose;

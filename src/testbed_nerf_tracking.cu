@@ -35,39 +35,6 @@ namespace fs = filesystem;
 NGP_NAMESPACE_BEGIN
 
 
-// inline __device__ MatrixXf make_gaussian_kernel(const uint32_t kernel_size) {
-//
-// 	MatrixXf kernel(kernel_size, kernel_size);
-//
-//     if (kernel_size==1) {
-//         kernel(0,0) = 1.f;
-//     } else {
-//         VectorXf p(kernel_size);
-//         switch (kernel_size) {
-//             case 3:
-//                 p[0]=1; p[1]=2; p[2]=1;
-//                 break;
-//             case 5:
-//                 p[0]=1; p[1]=4; p[2]=6; p[3]=4; p[4]=1;
-//                 break;
-//             case 7:
-//                 p[0]=1; p[1]=6; p[2]=15; p[3]=20; p[4]=15; p[5]=6; p[6]=1;
-//                 break;
-//             case 9:
-//                 p[0]=1; p[1]=8; p[2]=28; p[3]=56; p[4]=70; p[5]=56; p[6]=28; p[7]=8; p[8]=1;
-//                 break;
-//             case 11:
-//                 p[0]=1; p[1]=10; p[2]=45; p[3]=120; p[4]=210; p[5]=252; p[6]=210; p[7]=120; p[8]=45; p[9]=10; p[10]=1;
-//                 break;
-//         }
-//         p = p / p.sum();
-//         kernel = p*p.transpose();
-//     }
-//
-//     return kernel;
-// }
-
-
 std::vector<float> Testbed::make_gaussian_kernel_debug(const uint32_t kernel_size, const float sigma) {
 
     std::vector<float> kernel(kernel_size * kernel_size);
@@ -81,15 +48,26 @@ std::vector<float> Testbed::make_gaussian_kernel_debug(const uint32_t kernel_siz
 
     const double pi = 3.14159265358979323846;
     uint32_t cpt=0;
+    float norm = 0.0f;
     for (uint32_t i=0; i < kernel_size; i++){
         for (uint32_t j=0; j < kernel_size; j++){
 
             float g = 1/(2*pi*sigma*sigma) * std::exp( -( static_cast<float>( (i-hw)*(i-hw) + (j-hw)*(j-hw) ) ) / static_cast<float>(2*sigma*sigma) );
 
             kernel[cpt] = g;
+            norm += g;
             ++cpt;
         }
     }
+
+    cpt=0;
+    for (uint32_t i=0; i < kernel_size; i++){
+        for (uint32_t j=0; j < kernel_size; j++){
+            kernel[cpt] /= norm;
+            ++cpt;
+        }
+    }
+
     return kernel;
 }
 
@@ -288,7 +266,7 @@ __global__ void compute_GT_and_reconstructed_rgbd(
 	BoundingBox aabb,
 	default_rng_t rng,
 	const uint32_t target_batch_size,
-	const uint32_t* __restrict__ rays_counter,
+	const uint32_t* __restrict__ ray_counter,
 	int padded_output_width,
 	const float* __restrict__ envmap_data,
 	const Vector2i envmap_resolution,
@@ -317,7 +295,7 @@ __global__ void compute_GT_and_reconstructed_rgbd(
 	float* __restrict__ reconstructed_rgbd
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
-	if (i >= *rays_counter) { return; }
+	if (i >= *ray_counter) { return; }
 
 	// grab the number of samples for this ray, and the first sample
 	uint32_t numsteps = numsteps_in[i*2+0];
@@ -432,7 +410,143 @@ __global__ void compute_GT_and_reconstructed_rgbd(
 }
 
 
-__global__ void compute_loss_and_gradient(
+
+__global__ void compute_loss(
+	const uint32_t n_rays,
+	ELossType loss_type,
+	ELossType depth_loss_type,
+	float* __restrict__ loss_output,
+	float* __restrict__ loss_depth_output,
+    const uint32_t ray_stride,
+	const uint32_t kernel_window_size,
+	const int32_t* __restrict__ mapping_indices,
+	const float* __restrict__ ground_truth_rgbd,
+	const float* __restrict__ reconstructed_rgbd,
+    const float* __restrict__ kernel,
+	float* __restrict__ losses_and_gradients
+) {
+
+	const uint32_t super_i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (super_i >= n_rays) { return; }
+
+    // avg values within window
+	float avg_depth_ray = 0.f;
+	Array3f avg_rgb_ray = Array3f::Zero();
+
+    float avg_depth_ray_target = 0.f;
+	Array3f avg_rgb_ray_target = Array3f::Zero();
+
+    float norm = 0.f;
+    float norm_depth = 0.f;
+
+    uint32_t i;
+    uint32_t base_i = super_i*ray_stride;
+
+    uint32_t cpt=0;
+    bool is_there_at_least_one_ray_in_super_ray=false;
+    for (uint32_t u = 0; u < kernel_window_size; ++u) {
+	    for (uint32_t v = 0; v < kernel_window_size; ++v) {
+
+            i = base_i + cpt;
+
+            cpt++;
+
+            int32_t ray_idx = mapping_indices[i];
+
+            if (ray_idx < 0){
+                //NOTE: if a ray is missing we can also discard the super ray.
+                // ie break istead of continue
+                continue;
+            }
+
+            is_there_at_least_one_ray_in_super_ray=true;
+
+	        Array3f rgb_ray = {
+                reconstructed_rgbd[4*ray_idx],
+                reconstructed_rgbd[4*ray_idx+1],
+                reconstructed_rgbd[4*ray_idx+2],
+            };
+
+
+            avg_rgb_ray += kernel[cpt] * rgb_ray;
+
+	        Array3f rgb_ray_target = {
+                ground_truth_rgbd[4*ray_idx],
+                ground_truth_rgbd[4*ray_idx+1],
+                ground_truth_rgbd[4*ray_idx+2],
+            };
+
+            avg_rgb_ray_target += kernel[cpt] * rgb_ray_target;
+
+            norm += kernel[cpt];
+
+            float depth_ray = reconstructed_rgbd[4*ray_idx+3];
+
+            float depth_ray_target = ground_truth_rgbd[4*ray_idx+3];
+            // handle cases where depth is 0.0 or -1.0
+            if (depth_ray_target > 0.0) {
+                avg_depth_ray += kernel[cpt] * depth_ray;
+                avg_depth_ray_target += kernel[cpt] * depth_ray_target;
+                norm_depth += kernel[cpt];
+            }
+        }
+    }
+
+    losses_and_gradients[super_i*10+0] = 0.0f;
+    losses_and_gradients[super_i*10+1] = 0.0f;
+    losses_and_gradients[super_i*10+2] = 0.0f;
+    losses_and_gradients[super_i*10+3] = 0.0f;
+    losses_and_gradients[super_i*10+4] = 0.0f;
+    losses_and_gradients[super_i*10+5] = 0.0f;
+    losses_and_gradients[super_i*10+6] = 0.0f;
+    losses_and_gradients[super_i*10+7] = 0.0f;
+    losses_and_gradients[super_i*10+8] = -1;
+    losses_and_gradients[super_i*10+9] = -1;
+
+    //If all rays in super ray have 0 numsteps
+    if (!is_there_at_least_one_ray_in_super_ray){
+        return;
+    }
+
+    avg_rgb_ray /= norm;
+    avg_rgb_ray_target /= norm;
+
+    avg_depth_ray /= norm_depth;
+    avg_depth_ray_target /= norm_depth;
+
+	// Step again, this time computing loss
+    LossAndGradient lg = loss_and_gradient(avg_rgb_ray_target, avg_rgb_ray, loss_type);
+	LossAndGradient lg_depth = loss_and_gradient(Array3f::Constant(avg_depth_ray_target), Array3f::Constant(avg_depth_ray), depth_loss_type);
+
+
+    losses_and_gradients[super_i*10+0] = lg.loss.x();
+    losses_and_gradients[super_i*10+1] = lg.loss.y();
+    losses_and_gradients[super_i*10+2] = lg.loss.z();
+    losses_and_gradients[super_i*10+3] = lg.gradient.x();
+    losses_and_gradients[super_i*10+4] = lg.gradient.y();
+    losses_and_gradients[super_i*10+5] = lg.gradient.z();
+
+    losses_and_gradients[super_i*10+6] = lg_depth.loss.x();
+    losses_and_gradients[super_i*10+7] = lg_depth.gradient.x();
+
+    losses_and_gradients[super_i*10+8] = norm;
+    losses_and_gradients[super_i*10+9] = norm_depth;
+
+
+    float mean_loss = lg.loss.mean();
+	if (loss_output) {
+		loss_output[super_i] = mean_loss / (float)n_rays;
+	}
+	if (loss_depth_output) {
+        loss_depth_output[super_i] = lg_depth.loss.x() / (float)n_rays;
+	}
+}
+
+
+
+
+
+__global__ void compute_gradient(
 	const uint32_t n_rays,
 	BoundingBox aabb,
 	float loss_scale,
@@ -463,247 +577,149 @@ __global__ void compute_loss_and_gradient(
 	const float* __restrict__ ground_truth_rgbd,
 	const float* __restrict__ reconstructed_rgbd,
 	const uint32_t* __restrict__ ray_counter,
-    const float* __restrict__ kernel
+    const float* __restrict__ kernel,
+	const uint32_t n_super_rays,
+	float* __restrict__ losses_and_gradients
 ) {
 
-	const uint32_t super_i = threadIdx.x + blockIdx.x * blockDim.x;
-	if (super_i >= n_rays) { return; }
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= *ray_counter) { return; }
 
+    int32_t ray_idx = mapping_indices[i];
 
-    // make gaussian kernel
-    // MatrixXf kernel = make_gaussian_kernel(kernel_window_size, 11.f);
-
-    // avg values within window
-    float norm = 0.f;
-    float norm_depth_target = 0.f;
-	float avg_depth_ray = 0.f;
-	Array3f avg_rgb_ray = Array3f::Zero();
-
-    float avg_depth_ray_target = 0.f;
-	Array3f avg_rgb_ray_target = Array3f::Zero();
-
-    uint32_t i;
-    uint32_t base_i = super_i*ray_stride;
-    bool is_there_at_least_one_ray_in_super_ray=false;
-
-    uint32_t cpt=0;
-    for (uint32_t u = 0; u < kernel_window_size; ++u) {
-	    for (uint32_t v = 0; v < kernel_window_size; ++v) {
-
-            i = base_i + cpt;
-
-            cpt++;
-
-            int32_t ray_idx = mapping_indices[i];
-
-            if (ray_idx < 0){
-                //NOTE: if a ray is missing we can also discard the super ray.
-                // ie break istead of continue
-                continue;
-            }
-
-            is_there_at_least_one_ray_in_super_ray=true;
-
-	        Array3f rgb_ray = {
-                reconstructed_rgbd[4*ray_idx],
-                reconstructed_rgbd[4*ray_idx+1],
-                reconstructed_rgbd[4*ray_idx+2],
-            };
-
-            float depth_ray = reconstructed_rgbd[4*ray_idx+3];
-
-            avg_rgb_ray += kernel[cpt] * rgb_ray;
-            avg_depth_ray += kernel[cpt] * depth_ray;
-
-	        Array3f rgb_ray_target = {
-                ground_truth_rgbd[4*ray_idx],
-                ground_truth_rgbd[4*ray_idx+1],
-                ground_truth_rgbd[4*ray_idx+2],
-            };
-
-            float depth_ray_target = ground_truth_rgbd[4*ray_idx+3];
-
-            avg_rgb_ray_target += kernel[cpt] * rgb_ray_target;
-
-            // handle cases where depth is 0.0 or -1.0
-            if (depth_ray_target > 0.0) {
-                avg_depth_ray_target += kernel[cpt] * depth_ray_target;
-                norm_depth_target += kernel[cpt];
-            }
-
-            norm += kernel[cpt];
-        }
-    }
-
-    //If all rays in super ray have 0 numsteps
-    if (!is_there_at_least_one_ray_in_super_ray){
+    if (ray_idx < 0){
         return;
     }
 
-    avg_rgb_ray /= norm;
-    avg_depth_ray /= norm;
+    uint32_t super_i = i / ray_stride;
+    uint32_t cpt = i % ray_stride;
 
-    avg_rgb_ray_target /= norm;
-    avg_depth_ray_target /= norm_depth_target;
+    // uint32_t u = cpt / kernel_window_size;
+    // uint32_t v = cpt % kernel_window_size;
 
-	// Step again, this time computing loss
-    LossAndGradient lg = loss_and_gradient(avg_rgb_ray_target, avg_rgb_ray, loss_type);
-	LossAndGradient lg_depth = loss_and_gradient(Array3f::Constant(avg_depth_ray_target), Array3f::Constant(avg_depth_ray), depth_loss_type);
+    Array3f dloss_db = {
+        losses_and_gradients[super_i*10+3],
+        losses_and_gradients[super_i*10+4],
+        losses_and_gradients[super_i*10+5]
+    };
 
-    float depth_loss_gradient = avg_depth_ray_target > 0.0f ? depth_supervision_lambda * lg_depth.gradient.x() : 0;
+    float norm = losses_and_gradients[super_i*10+8];
 
-    uint32_t total_n_rays = *ray_counter;
+    float norm_depth = losses_and_gradients[super_i*10+9];
 
-    float mean_loss = lg.loss.mean();
-	if (loss_output) {
-        cpt=0;
-	    for (uint32_t u = 0; u < kernel_window_size; ++u) {
-	        for (uint32_t v = 0; v < kernel_window_size; ++v) {
-                i = base_i + cpt;
-                cpt++;
-                int32_t ray_idx = mapping_indices[i];
-                if (ray_idx < 0){
-		            loss_output[i] = 0.f;
-                } else {
-		            loss_output[i] = mean_loss / (float)total_n_rays;
-                }
-            }
-        }
-	}
-	if (loss_depth_output) {
-        cpt=0;
-	    for (uint32_t u = 0; u < kernel_window_size; ++u) {
-	        for (uint32_t v = 0; v < kernel_window_size; ++v) {
-                i = base_i + cpt;
-                cpt++;
-                int32_t ray_idx = mapping_indices[i];
-                if (ray_idx < 0){
-		            loss_depth_output[i] = 0.f;
-                } else {
-                    float depth_ray_target = ground_truth_rgbd[4*ray_idx+3];
-                    if (depth_ray_target>0.0) {
-		                loss_depth_output[i] = lg_depth.loss.x() / (float)total_n_rays;
-                    } else {
-		                loss_depth_output[i] = 0.f;
-                    }
-                }
-            }
-        }
-	}
+    Array3f rgb_ray = {
+        reconstructed_rgbd[4*ray_idx],
+        reconstructed_rgbd[4*ray_idx+1],
+        reconstructed_rgbd[4*ray_idx+2],
+    };
 
+    float depth_ray = reconstructed_rgbd[4*ray_idx+3];
+
+    float depth_ray_target = ground_truth_rgbd[4*ray_idx+3];
+
+    float depth_loss_gradient = depth_ray_target > 0.0f ? depth_supervision_lambda * losses_and_gradients[super_i*10+7] : 0;
+
+    uint32_t total_n_rays = n_super_rays;
 
     loss_scale /= total_n_rays;
 
     // No regularization for pose optimization
-	const float output_l2_reg = 0.0f;
-	const float output_l1_reg_density = 0.0f;
+    const float output_l2_reg = rgb_activation == ENerfActivation::Exponential ? 1e-4f : 0.0f;
+    const float output_l1_reg_density = *mean_density_ptr < NERF_MIN_OPTICAL_THICKNESS() ? 1e-4f : 0.0f;
 
 	// now do it again computing gradients
-    cpt=0;
-	for (uint32_t u = 0; u < kernel_window_size; ++u) {
-	    for (uint32_t v = 0; v < kernel_window_size; ++v) {
-            i = base_i + cpt;
-            cpt++;
+    Array3f rgb_ray2 = { 0.f,0.f,0.f };
+	float depth_ray2 = 0.f;
+	float T = 1.f;
 
-            int32_t ray_idx = mapping_indices[i];
+    uint32_t base = numsteps_in[ray_idx*2+1];
+	uint32_t base_compact = numsteps_compacted[ray_idx*2+1];
+	uint32_t numsteps_compact = numsteps_compacted[ray_idx*2];
 
-            if (ray_idx < 0){
-                continue;
-            }
+    if (numsteps_compact==0) {
+        return;
+    }
 
-            Array3f rgb_ray = {
-                reconstructed_rgbd[4*ray_idx],
-                reconstructed_rgbd[4*ray_idx+1],
-                reconstructed_rgbd[4*ray_idx+2],
-            };
-            float depth_ray = reconstructed_rgbd[4*ray_idx+3];
-            float depth_ray_target = ground_truth_rgbd[4*ray_idx+3];
+    coords_out += base_compact;
+	dloss_doutput += base_compact * padded_output_width;
 
-            Array3f rgb_ray2 = { 0.f,0.f,0.f };
-	        float depth_ray2 = 0.f;
-	        float T = 1.f;
+	coords_in += base;
+	network_output += base * padded_output_width;
 
-            uint32_t base = numsteps_in[ray_idx*2+1];
-	        uint32_t base_compact = numsteps_compacted[ray_idx*2+1];
-	        uint32_t numsteps_compact = numsteps_compacted[ray_idx*2];
-
-            coords_out += base_compact;
-	        dloss_doutput += base_compact * padded_output_width;
-
-	        coords_in += base;
-	        network_output += base * padded_output_width;
-
-	        Eigen::Vector3f ray_o = rays_in_unnormalized[ray_idx].o;
-
-            for (uint32_t j=0; j < numsteps_compact; ++j) {
-
-                // Compact network inputs
-		        NerfCoordinate* coord_out = coords_out(j);
-		        const NerfCoordinate* coord_in = coords_in(j);
-		        coord_out->copy(*coord_in, coords_out.stride_in_bytes);
-
-		        const Vector3f pos = unwarp_position(coord_in->pos.p, aabb);
-		        float depth = (pos - ray_o).norm();
-
-		        float dt = unwarp_dt(coord_in->dt);
-		        const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
-		        const Array3f rgb = network_to_rgb(local_network_output, rgb_activation);
-		        const float density = network_to_density(float(local_network_output[3]), density_activation);
-		        const float alpha = 1.f - __expf(-density * dt);
-		        const float weight = alpha * T;
-		        rgb_ray2 += weight * rgb;
-		        depth_ray2 += weight * depth;
-		        T *= (1.f - alpha);
+	Eigen::Vector3f ray_o = rays_in_unnormalized[ray_idx].o;
 
 
-		        // we know the suffix of this ray compared to where we are up to. note the suffix depends on this step's alpha as suffix = (1-alpha)*(somecolor), so dsuffix/dalpha = -somecolor = -suffix/(1-alpha)
-		        const Array3f suffix = rgb_ray - rgb_ray2;
-		        const Array3f dloss_by_drgb = weight * lg.gradient * kernel[cpt] / norm;
+    // No losses and gradients for this ray.
+    // zero-out all its gradients.
+    if (norm < 0) {
+        // for (uint32_t j=0; j < numsteps_compact; ++j) {
 
-		        tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput;
+        //     tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput = {0.0,0.0,0.0,0.0};
 
-		        // chain rule to go from dloss/drgb to dloss/dmlp_output
-                local_dL_doutput[0] = loss_scale * (dloss_by_drgb.x() * network_to_rgb_derivative(local_network_output[0], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[0])); // Penalize way too large color values
-		        local_dL_doutput[1] = loss_scale * (dloss_by_drgb.y() * network_to_rgb_derivative(local_network_output[1], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[1]));
-		        local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z() * network_to_rgb_derivative(local_network_output[2], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[2]));
+	    //     *(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput = local_dL_doutput;
 
-		        float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
-		        const float depth_suffix = depth_ray - depth_ray2;
-
-                // if no target depth for that ray then no depth supervision
-                float depth_supervision = 0.0f;
-                if (depth_ray_target > 0.0f) {
-		            depth_supervision = depth_loss_gradient * (kernel[cpt] / norm) * (T * depth - depth_suffix);
-                }
-
-		        float dloss_by_dmlp = density_derivative * (
-		        	dt * (lg.gradient.matrix().dot((T * rgb - suffix).matrix()) + depth_supervision)
-		        );
-
-		        local_dL_doutput[3] =
-		        	loss_scale * dloss_by_dmlp +
-		        	(float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) +
-		        	(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
-		        	;
+	    //     dloss_doutput += padded_output_width;
+        // }
+        return;
+    }
 
 
-		        *(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput = local_dL_doutput;
+    for (uint32_t j=0; j < numsteps_compact; ++j) {
 
-		        dloss_doutput += padded_output_width;
-		        network_output += padded_output_width;
-            }
+        // Compact network inputs
+	    NerfCoordinate* coord_out = coords_out(j);
+	    const NerfCoordinate* coord_in = coords_in(j);
+	    coord_out->copy(*coord_in, coords_out.stride_in_bytes);
 
-		    dloss_doutput -= numsteps_compact*padded_output_width;
-		    network_output -= numsteps_compact*padded_output_width;
+	    const Vector3f pos = unwarp_position(coord_in->pos.p, aabb);
+	    float depth = (pos - ray_o).norm();
 
-            coords_in -= base;
-	        network_output -= base * padded_output_width;
+	    float dt = unwarp_dt(coord_in->dt);
+	    const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
+	    const Array3f rgb = network_to_rgb(local_network_output, rgb_activation);
+	    const float density = network_to_density(float(local_network_output[3]), density_activation);
+	    const float alpha = 1.f - __expf(-density * dt);
+	    const float weight = alpha * T;
+	    rgb_ray2 += weight * rgb;
+	    depth_ray2 += weight * depth;
+	    T *= (1.f - alpha);
 
-            coords_out -= base_compact;
-	        dloss_doutput -= base_compact * padded_output_width;
+	    // we know the suffix of this ray compared to where we are up to. note the suffix depends on this step's alpha as suffix = (1-alpha)*(somecolor), so dsuffix/dalpha = -somecolor = -suffix/(1-alpha)
+	    const Array3f suffix = rgb_ray - rgb_ray2;
+	    const Array3f dloss_by_drgb = weight * dloss_db * kernel[cpt] / norm;
 
+	    tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput;
+
+	    // chain rule to go from dloss/drgb to dloss/dmlp_output
+        local_dL_doutput[0] = loss_scale * (dloss_by_drgb.x() * network_to_rgb_derivative(local_network_output[0], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[0])); // Penalize way too large color values
+	    local_dL_doutput[1] = loss_scale * (dloss_by_drgb.y() * network_to_rgb_derivative(local_network_output[1], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[1]));
+	    local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z() * network_to_rgb_derivative(local_network_output[2], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[2]));
+
+	    float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
+	    const float depth_suffix = depth_ray - depth_ray2;
+
+        // if no target depth for that ray then no depth supervision
+        float depth_supervision = 0.0f;
+        if (depth_ray_target > 0.0f) {
+	        depth_supervision = depth_loss_gradient * (kernel[cpt] / norm_depth) * (T * depth - depth_suffix);
         }
-	}
+
+	    const Array3f tmp = dloss_db * kernel[cpt] / norm;
+	    float dloss_by_dmlp = density_derivative * (
+	    	dt * (tmp.matrix().dot((T * rgb - suffix).matrix()) + depth_supervision)
+	    );
+
+	    local_dL_doutput[3] =
+	    	loss_scale * dloss_by_dmlp +
+	    	(float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) +
+	    	(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
+	    	;
+
+	    *(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput = local_dL_doutput;
+
+	    dloss_doutput += padded_output_width;
+	    network_output += padded_output_width;
+    }
 }
 
 
@@ -762,6 +778,7 @@ __global__ void compute_camera_gradient(
 		const Vector3f warped_pos = coords(j)->pos.p;
 		const Vector3f pos_gradient = coords_gradient(j)->pos.p.cwiseProduct(warp_position_derivative(warped_pos, aabb));
 		ray_gradient.o += pos_gradient;
+
 		const Vector3f pos = unwarp_position(warped_pos, aabb);
 
 		// Scaled by t to account for the fact that further-away objects' position
@@ -831,6 +848,9 @@ void Testbed::track_pose_nerf_slam_opti(uint32_t target_batch_size, bool get_los
     ++m_training_step_track;
 
     std::vector<float> losses_scalar = m_nerf.training.counters_rgb_track.update_after_training(target_batch_size, get_loss_scalar, stream, true);
+
+    m_nerf.training.counters_rgb_track.rays_per_batch = 1<<12;
+
     float loss_scalar = losses_scalar[0];
     float loss_depth_scalar = losses_scalar[1];
 	bool zero_records = m_nerf.training.counters_rgb_track.measured_batch_size == 0;
@@ -865,15 +885,68 @@ void Testbed::track_pose_nerf_slam_opti(uint32_t target_batch_size, bool get_los
 			pos_gradient += m_nerf.training.cam_pos_offset[i].variable() * l2_reg;
 			rot_gradient += m_nerf.training.cam_rot_offset[i].variable() * l2_reg;
 
+            // -- -- -- if (m_nerf.training.separate_pos_and_rot_lr) {
+			// -- -- -- 	m_nerf.training.cam_pos_offset[i].set_learning_rate(
+            // -- -- --         std::max(
+            // -- -- --                  m_nerf.training.extrinsic_learning_rate_pos * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)),
+            // -- -- --                  m_optimizer->learning_rate()/1000.0f
+            // -- -- --         )
+            // -- -- --     );
+			// -- -- -- 	m_nerf.training.cam_rot_offset[i].set_learning_rate(
+            // -- -- --         std::max(
+            // -- -- --                  m_nerf.training.extrinsic_learning_rate_rot * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)),
+            // -- -- --                  m_optimizer->learning_rate()/1000.0f
+            // -- -- --         )
+            // -- -- --     );
+            // -- -- -- } else {
+			// -- -- -- 	m_nerf.training.cam_pos_offset[i].set_learning_rate(
+            // -- -- --         std::max(
+            // -- -- --                  m_nerf.training.extrinsic_learning_rate * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)),
+            // -- -- --                  m_optimizer->learning_rate()/1000.0f
+            // -- -- --         )
+            // -- -- --     );
+			// -- -- -- 	m_nerf.training.cam_rot_offset[i].set_learning_rate(
+            // -- -- --         std::max(
+            // -- -- --                  m_nerf.training.extrinsic_learning_rate * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)),
+            // -- -- --                  m_optimizer->learning_rate()/1000.0f
+            // -- -- --         )
+            // -- -- --     );
+            // -- -- -- }
+
             if (m_nerf.training.separate_pos_and_rot_lr) {
-			    m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate_pos);
-			    m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate_rot);
+				m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate_pos);
+				m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate_rot);
             } else {
-			    m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate);
-			    m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate);
+				m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate);
+				m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.extrinsic_learning_rate);
             }
 
-            tlog::info()<<" pos gradient = "<< pos_gradient[0]<<", "<< pos_gradient[1]<<", "<<pos_gradient[2];
+            //tlog::info()<< " gradient pos: "<< pos_gradient.x() << ", "<< pos_gradient.y() << ", " << pos_gradient.z()<< "    |     gradient rot: "<< rot_gradient.x() << ", "<< rot_gradient.y() << ", " << rot_gradient.z();
+
+            if ( std::isnan(pos_gradient.x()) or std::isnan(pos_gradient.y()) or std::isnan(pos_gradient.z()) or std::isnan(rot_gradient.x()) or std::isnan(rot_gradient.y()) or std::isnan(rot_gradient.z()) ) {
+                pos_gradient.x() = 0.f;
+                pos_gradient.y() = 0.f;
+                pos_gradient.z() = 0.f;
+                rot_gradient.x() = 0.f;
+                rot_gradient.y() = 0.f;
+                rot_gradient.z() = 0.f;
+            }
+
+            float max_step_pos = 10;
+            float max_step_rot = 10;
+            pos_gradient.x() = max( -max_step_pos, min(pos_gradient.x(), max_step_pos) );
+            pos_gradient.y() = max( -max_step_pos, min(pos_gradient.y(), max_step_pos) );
+            pos_gradient.z() = max( -max_step_pos, min(pos_gradient.z(), max_step_pos) );
+
+            rot_gradient.x() = max( -max_step_rot, min(rot_gradient.x(), max_step_rot) );
+            rot_gradient.y() = max( -max_step_rot, min(rot_gradient.y(), max_step_rot) );
+            rot_gradient.z() = max( -max_step_rot, min(rot_gradient.z(), max_step_rot) );
+
+            float norm_pos = pos_gradient.norm();
+            float norm_rot = rot_gradient.norm();
+
+            m_tracking_pos_gradient_norm=norm_pos;
+            m_tracking_rot_gradient_norm=norm_rot;
 
 			m_nerf.training.cam_pos_offset[i].step(pos_gradient);
 			m_nerf.training.cam_rot_offset[i].step(rot_gradient);
@@ -889,6 +962,16 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 	const uint32_t max_samples = target_batch_size * 16; // Somewhat of a worst case
 	const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
 	const uint32_t extra_stride = m_nerf_network->n_extra_dims() * sizeof(float); // extra stride on top of base NerfCoordinate struct
+
+    //NOTE: get settings/hyperparams for tracking
+    const float sigma = m_tracking_sigma_gaussian_kernel;
+    const uint32_t kernel_window_size = m_tracking_kernel_window_size;
+    uint32_t ray_stride = kernel_window_size*kernel_window_size;
+    uint32_t sample_away_from_border_margin_h = m_sample_away_from_border_margin_h;
+    uint32_t sample_away_from_border_margin_w = m_sample_away_from_border_margin_w;
+    uint32_t n_super_rays = counters.rays_per_batch / ray_stride; // get the number of rays for which we have enough room to get the corresponding nearby rays (within window)
+
+
 
 	GPUMemoryArena::Allocation alloc;
 	auto scratch = allocate_workspace_and_distribute<
@@ -907,7 +990,8 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		int32_t, // mapping_indices
 		float, // ground_truth_rgbd
 		float,  // reconstructed_rgbd
-		uint32_t // numsteps_compacted
+		uint32_t, // numsteps_compacted
+		float  // losses_and_gradients
 	>(
 		stream, &alloc,
 		counters.rays_per_batch,
@@ -925,7 +1009,8 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		counters.rays_per_batch,
 		counters.rays_per_batch * 4,
 		counters.rays_per_batch * 4,
-		counters.rays_per_batch * 2
+		counters.rays_per_batch * 2,
+		n_super_rays * 10
 	);
 
 	// TODO: C++17 structured binding
@@ -945,6 +1030,7 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 	float* ground_truth_rgbd = std::get<13>(scratch);
 	float* reconstructed_rgbd = std::get<14>(scratch);
 	uint32_t* numsteps_compacted = std::get<15>(scratch);
+	float* losses_and_gradients = std::get<16>(scratch);
 
 	uint32_t max_inference;
 	if (counters.measured_batch_size_before_compaction == 0) {
@@ -967,14 +1053,6 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 
 	counters.n_rays_total += counters.rays_per_batch;
 	m_nerf.training.n_rays_since_error_map_update += counters.rays_per_batch;
-
-    //NOTE: get settings/hyperparams for tracking
-    const float sigma = m_tracking_sigma_gaussian_kernel;
-    const uint32_t kernel_window_size = m_tracking_kernel_window_size;
-    uint32_t ray_stride = kernel_window_size*kernel_window_size;
-    uint32_t sample_away_from_border_margin_h = m_sample_away_from_border_margin_h;
-    uint32_t sample_away_from_border_margin_w = m_sample_away_from_border_margin_w;
-    uint32_t n_super_rays = counters.rays_per_batch / ray_stride; // get the number of rays for which we have enough room to get the corresponding nearby rays (within window)
 
     m_track_pose_nerf_num_super_rays_targeted_in_tracking_step=n_super_rays;
 
@@ -1087,9 +1165,27 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 	);
 
 
-    //NOTE: compute loss and gradients.
-	linear_kernel(compute_loss_and_gradient, 0, stream,
+
+    //NOTE: compute loss.
+	linear_kernel(compute_loss, 0, stream,
 		n_super_rays,
+		m_nerf.training.track_loss_type,
+		m_nerf.training.track_depth_loss_type,
+		counters.loss.data(),
+		counters.loss_depth.data(),
+        ray_stride,
+        kernel_window_size,
+		mapping_indices,
+        ground_truth_rgbd,
+        reconstructed_rgbd,
+        kernel_gpu.data(),
+        losses_and_gradients
+	);
+
+
+    //NOTE: compute loss and gradients.
+	linear_kernel(compute_gradient, 0, stream,
+		counters.rays_per_batch,
 		m_aabb,
 		LOSS_SCALE,
 		padded_output_width,
@@ -1119,7 +1215,9 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
         ground_truth_rgbd,
         reconstructed_rgbd,
 		ray_counter,
-        kernel_gpu.data()
+        kernel_gpu.data(),
+		n_super_rays,
+        losses_and_gradients
 	);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(

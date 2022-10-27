@@ -2602,8 +2602,8 @@ void Testbed::track_pose(uint32_t batch_size) {
 		m_train = false;
 		return;
 	}
-    
-    //TODO: 
+
+    //TODO:
 	bool get_loss_scalar = m_training_step_track % 1 == 0;
 
 	{
@@ -2630,20 +2630,20 @@ void Testbed::track_pose(uint32_t batch_size) {
 // 		m_train = false;
 // 		return;
 // 	}
-// 
+//
 // 	bool get_loss_scalar = m_training_step_track % 16 == 0;
-// 
+//
 // 	{
 // 		auto start = std::chrono::steady_clock::now();
 // 		ScopeGuard timing_guard{[&]() {
 // 			m_training_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count());
 // 		}};
-// 
+//
 // 		track_pose_naive_nerf_slam(batch_size, get_loss_scalar, m_stream.get());
-// 
+//
 // 		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
 // 	}
-// 
+//
 // 	if (get_loss_scalar) {
 //         //FIXME: add tracking loss to loss graph
 // 		update_loss_graph();
@@ -2740,13 +2740,36 @@ __global__ void dlss_prep_kernel(
 	}
 }
 
+void Testbed::manually_set_focal_length_for_rendering(const float fx, const float fy){
+    m_manually_set_focal_length.x() = fx;
+    m_manually_set_focal_length.y() = fy;
+}
+
+void Testbed::manually_set_screen_center_for_rendering(const float cx, const float cy){
+    m_manually_set_screen_center.x() = cx;
+    m_manually_set_screen_center.y() = cy;
+}
+
 void Testbed::render_frame(const Matrix<float, 3, 4>& camera_matrix0, const Matrix<float, 3, 4>& camera_matrix1, const Vector4f& nerf_rolling_shutter, CudaRenderBuffer& render_buffer, bool to_srgb) {
 	Vector2i max_res = m_window_res.cwiseMax(render_buffer.in_resolution());
 
 	render_buffer.clear_frame(m_stream.get());
 
-	Vector2f focal_length = calc_focal_length(render_buffer.in_resolution(), m_fov_axis, m_zoom);
-	Vector2f screen_center = render_screen_center();
+	Vector2f debug_focal_length = calc_focal_length(render_buffer.in_resolution(), m_fov_axis, m_zoom);
+
+    Vector2f focal_length;
+    if ((m_manually_set_focal_length.x() > 0.0) && (m_manually_set_focal_length.y() > 0.0)){
+	    focal_length = m_manually_set_focal_length;
+    } else {
+	    focal_length = calc_focal_length(render_buffer.in_resolution(), m_fov_axis, m_zoom);
+    }
+
+    Vector2f screen_center;
+    if ((m_manually_set_screen_center.x() > 0.0) && (m_manually_set_screen_center.y() > 0.0)){
+	    screen_center = m_manually_set_screen_center;
+    } else {
+	    screen_center = render_screen_center();
+    }
 
 	if (m_quilting_dims != Vector2i::Ones() && m_quilting_dims != Vector2i{2, 1}) {
 		// In the case of a holoplay lenticular screen, m_scale represents the inverse distance of the head above the display.

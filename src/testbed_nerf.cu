@@ -2555,8 +2555,7 @@ void Testbed::render_nerf(CudaRenderBuffer& render_buffer, const Vector2i& max_r
 	bool render_grid_distortion = m_nerf.render_with_lens_distortion && !render_buffer.dlss();
 
 	Lens lens = render_opencv_lens ? m_nerf.render_lens : Lens{};
-
-
+    
 	m_nerf.tracer.init_rays_from_camera(
 		render_buffer.spp(),
 		m_network->padded_output_width(),
@@ -3993,6 +3992,44 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 		//m_nerf.training.extra_dims_gpu.copy_from_host(extra_dims_new_values);
 		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.extra_dims_gpu.data(), extra_dims_new_values.data(), m_nerf.training.n_images_for_training * n_extra_dims * sizeof(float) , cudaMemcpyHostToDevice, stream));
 	}
+
+
+
+	bool train_camera = m_nerf.training.optimize_extrinsics;
+	if (train_camera && m_nerf.training.n_steps_since_cam_update >= m_nerf.training.n_steps_between_cam_updates) {
+		float per_camera_loss_scale = (float)m_nerf.training.n_images_for_training / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates;
+
+		if (m_nerf.training.optimize_extrinsics) {
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+
+			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
+
+			// Optimization step
+            // for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+		    for (uint32_t k = 0; k < m_nerf.training.idx_images_for_training_slam_pose.size(); ++k) {
+                uint32_t i = m_nerf.training.idx_images_for_training_slam_pose[k];
+				Vector3f pos_gradient = m_nerf.training.cam_pos_gradient[i] * per_camera_loss_scale;
+				Vector3f rot_gradient = m_nerf.training.cam_rot_gradient[i] * per_camera_loss_scale;
+
+				float l2_reg = m_nerf.training.extrinsic_l2_reg;
+				pos_gradient += m_nerf.training.cam_pos_offset[i].variable() * l2_reg;
+				rot_gradient += m_nerf.training.cam_rot_offset[i].variable() * l2_reg;
+
+				m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(m_nerf.training.extrinsic_learning_rate * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+				m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(m_nerf.training.extrinsic_learning_rate * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+
+				m_nerf.training.cam_pos_offset[i].step(pos_gradient);
+				m_nerf.training.cam_rot_offset[i].step(rot_gradient);
+			    
+                m_nerf.training.update_transforms(i, i+1);
+			}
+
+		}
+
+		m_nerf.training.n_steps_since_cam_update = 0;
+	}
+
 
 }
 

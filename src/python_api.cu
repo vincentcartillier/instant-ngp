@@ -450,10 +450,20 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("set_nerf_network_render_blurry", &Testbed::set_nerf_network_render_blurry,
 			py::arg("render_blurry")
         )
+		.def("manually_set_focal_length_for_rendering", &Testbed::manually_set_focal_length_for_rendering,
+			py::arg("fx"),
+			py::arg("fy")
+        )
+		.def("manually_set_screen_center_for_rendering", &Testbed::manually_set_screen_center_for_rendering,
+			py::arg("cx"),
+			py::arg("cy")
+        )
 		;
 
 	// Interesting members.
 	testbed
+		.def_readonly("tracking_pos_gradient_norm", &Testbed::m_tracking_pos_gradient_norm)
+		.def_readonly("tracking_rot_gradient_norm", &Testbed::m_tracking_rot_gradient_norm)
 		.def_readonly("tracking_loss", &Testbed::m_tracking_loss)
 		.def_readonly("tracking_loss_depth", &Testbed::m_tracking_loss_depth)
 		.def_readonly("mapping_loss", &Testbed::m_mapping_loss)
@@ -623,11 +633,14 @@ PYBIND11_MODULE(pyngp, m) {
 		;
 
 	py::class_<Testbed::Nerf::Training>(nerf, "Training")
+		.def_readwrite("n_steps_since_cam_update", &Testbed::Nerf::Training::n_steps_since_cam_update)
+		.def_readwrite("n_steps_between_cam_updates", &Testbed::Nerf::Training::n_steps_between_cam_updates)
 		.def_readonly("counters_rgb_track", &Testbed::Nerf::Training::counters_rgb_track)
 		.def_readwrite("random_bg_color", &Testbed::Nerf::Training::random_bg_color)
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
 		.def_readwrite("n_images_for_training_slam", &Testbed::Nerf::Training::n_images_for_training_slam)
 		.def_readwrite("idx_images_for_training_slam", &Testbed::Nerf::Training::idx_images_for_training_slam)
+		.def_readwrite("idx_images_for_training_slam_pose", &Testbed::Nerf::Training::idx_images_for_training_slam_pose)
 		.def_readwrite("indice_image_for_tracking_pose", &Testbed::Nerf::Training::indice_image_for_tracking_pose)
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
