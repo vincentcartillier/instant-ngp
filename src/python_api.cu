@@ -513,6 +513,9 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("compute_image_mse", &Testbed::compute_image_mse,
 			py::arg("quantize") = false
 		)
+		.def("reset_camera_optimizer", &Testbed::reset_camera_optimizer,
+			py::arg("cam_id")
+        )
 		.def_readwrite("camera_matrix", &Testbed::m_camera)
 		.def_readwrite("up_dir", &Testbed::m_up_dir)
 		.def_readwrite("sun_dir", &Testbed::m_sun_dir)
@@ -635,12 +638,16 @@ PYBIND11_MODULE(pyngp, m) {
 	py::class_<Testbed::Nerf::Training>(nerf, "Training")
 		.def_readwrite("n_steps_since_cam_update", &Testbed::Nerf::Training::n_steps_since_cam_update)
 		.def_readwrite("n_steps_between_cam_updates", &Testbed::Nerf::Training::n_steps_between_cam_updates)
+		.def_readwrite("n_steps_since_cam_update_tracking", &Testbed::Nerf::Training::n_steps_since_cam_update_tracking)
+		.def_readwrite("n_steps_between_cam_updates_tracking", &Testbed::Nerf::Training::n_steps_between_cam_updates_tracking)
 		.def_readonly("counters_rgb_track", &Testbed::Nerf::Training::counters_rgb_track)
 		.def_readwrite("random_bg_color", &Testbed::Nerf::Training::random_bg_color)
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
 		.def_readwrite("n_images_for_training_slam", &Testbed::Nerf::Training::n_images_for_training_slam)
 		.def_readwrite("idx_images_for_training_slam", &Testbed::Nerf::Training::idx_images_for_training_slam)
 		.def_readwrite("idx_images_for_training_slam_pose", &Testbed::Nerf::Training::idx_images_for_training_slam_pose)
+		.def_readwrite("images_tracking_loss", &Testbed::Nerf::Training::images_tracking_loss)
+		.def_readwrite("images_tracking_std", &Testbed::Nerf::Training::images_tracking_std)
 		.def_readwrite("indice_image_for_tracking_pose", &Testbed::Nerf::Training::indice_image_for_tracking_pose)
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
@@ -692,6 +699,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("extrinsic_learning_rate_pos", &Testbed::Nerf::Training::extrinsic_learning_rate_pos)
 		.def_readwrite("extrinsic_learning_rate_rot", &Testbed::Nerf::Training::extrinsic_learning_rate_rot)
 		.def_readwrite("separate_pos_and_rot_lr", &Testbed::Nerf::Training::separate_pos_and_rot_lr)
+		.def_readwrite("ba_extrinsic_learning_rate_pos", &Testbed::Nerf::Training::ba_extrinsic_learning_rate_pos)
+		.def_readwrite("ba_extrinsic_learning_rate_rot", &Testbed::Nerf::Training::ba_extrinsic_learning_rate_rot)
+		.def_readonly("sampled_pixels_for_tracking", &Testbed::Nerf::Training::sampled_pixels_for_tracking)
+		.def_readonly("sampled_ray_indices_for_tracking_gradient", &Testbed::Nerf::Training::sampled_ray_indices_for_tracking_gradient)
+		.def_readwrite("rays_per_tracking_batch", &Testbed::Nerf::Training::rays_per_tracking_batch)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

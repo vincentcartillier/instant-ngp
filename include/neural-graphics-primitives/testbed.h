@@ -336,12 +336,14 @@ public:
 		tcnn::GPUMemory<float> loss_depth;
 
 		uint32_t rays_per_batch = 1<<12;
+		uint32_t super_rays_counter = 0;
+		uint32_t super_rays_counter_depth = 0;
 		uint32_t n_rays_total = 0;
 		uint32_t measured_batch_size = 0;
 		uint32_t measured_batch_size_before_compaction = 0;
 
 		void prepare_for_training_steps(cudaStream_t stream);
-		std::vector<float> update_after_training(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream, bool get_depth_loss_scalar=false);
+		std::vector<float> update_after_training(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream, bool get_depth_loss_scalar=false, bool mode_tracking=false);
 	};
 
 	void train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -574,6 +576,8 @@ public:
 
 	bool m_gui_redraw = true;
 
+    void reset_camera_optimizer(uint32_t cam_id);
+
 	struct Nerf {
 		NerfTracer tracer;
 
@@ -587,8 +591,18 @@ public:
             std::vector<uint32_t> idx_images_for_training_slam_pose;
 	        tcnn::GPUMemory<uint32_t> idx_images_for_training_slam_gpu;
 
+            std::vector<float> images_tracking_loss;
+	        tcnn::GPUMemory<float> images_tracking_loss_gpu;
+
+            std::vector<float> images_tracking_std;
+	        tcnn::GPUMemory<float> images_tracking_std_gpu;
+
             uint32_t indice_image_for_tracking_pose;
             tcnn::GPUMemory<uint32_t> indice_image_for_tracking_pose_gpu;
+
+            std::vector<uint32_t> sampled_pixels_for_tracking;
+            uint32_t rays_per_tracking_batch=4096;
+            std::vector<uint32_t> sampled_ray_indices_for_tracking_gradient;
 
 			struct ErrorMap {
 				tcnn::GPUMemory<float> data;
@@ -627,10 +641,14 @@ public:
 			tcnn::GPUMemory<float> extra_dims_gradient_gpu;
 			std::vector<AdamOptimizer<Eigen::ArrayXf>> extra_dims_opt;
 
+
 			void reset_extra_dims(default_rng_t &rng);
 
 			float extrinsic_l2_reg = 1e-4f;
 			float extrinsic_learning_rate = 1e-3f;
+
+            float ba_extrinsic_learning_rate_pos = 1e-3f;
+			float ba_extrinsic_learning_rate_rot = 1e-3f;
 
             float extrinsic_learning_rate_pos = 1e-3f;
 			float extrinsic_learning_rate_rot = 1e-3f;
@@ -660,6 +678,8 @@ public:
 			float error_overlay_brightness = 0.125f;
 			uint32_t n_steps_between_cam_updates = 16;
 			uint32_t n_steps_since_cam_update = 0;
+			uint32_t n_steps_since_cam_update_tracking = 0;
+			uint32_t n_steps_between_cam_updates_tracking = 1;
 
 			bool sample_focal_plane_proportional_to_error = false;
 			bool sample_image_proportional_to_error = false;
