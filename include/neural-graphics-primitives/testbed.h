@@ -351,20 +351,55 @@ public:
 	void train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 
+    // =======================================
+    // =======================================
+    // TRACKING functions
+    // =======================================
+    // =======================================
     float m_tracking_sigma_gaussian_kernel=5.f;
-    std::vector<float> make_gaussian_kernel_debug(const uint32_t kernel_size, const float sigma);
-    // void track_pose_opti(uint32_t batch_size);
-	void track_pose_nerf_slam_opti(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
-	void track_pose_nerf_slam_step_opti(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+    uint32_t m_tracking_gaussian_pyramid_level=0;
+    std::vector<float> make_gaussian_kernel(const uint32_t kernel_size, const float sigma);
+    std::vector<float> make_5tap_kernel();
     uint32_t m_track_pose_nerf_num_rays_in_tracking_step=0;
     uint32_t m_track_pose_nerf_num_super_rays_targeted_in_tracking_step=0;
-
-    void track_pose_naive(uint32_t batch_size);
-	void track_pose_naive_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
-	void track_pose_naive_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	void track_pose_simple_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void track_pose_simple_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	void track_pose_gaussian_blur_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void track_pose_gaussian_blur_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	void track_pose_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
     void track_pose(uint32_t batch_size);
-	// void track_pose_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
-	// void track_pose_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+    void get_receptive_field_of_gaussian_pyramid_at_level(uint32_t level, std::vector<int>& rf);
+    void sample_pixels_for_tracking_with_gaussian_pyramid(
+        const uint32_t max_rays_per_batch,
+        uint32_t& ray_counter,
+        uint32_t& super_ray_counter,
+        uint32_t& ray_counter_for_gradient,
+        std::vector<float>& xy_image_pixel_indices,
+        std::vector<uint32_t>& xy_image_pixel_indices_int,
+        std::vector<uint32_t>& xy_image_super_pixel_at_level_indices_int_cpu,
+        std::vector<uint32_t>& ray_mapping,
+        const bool snap_to_pixel_centers,
+        const uint32_t sample_away_from_border_margin_h,
+        const uint32_t sample_away_from_border_margin_w,
+        default_rng_t& rng,
+        const std::vector<int>& rf,
+        const uint32_t& super_ray_window_size,
+        const uint32_t& ray_stride,
+        const Eigen::Vector2i& resolution,
+        const Eigen::Vector2i& resolution_at_level,
+        const uint32_t& level
+    );
+    /*
+     * tracking modes:
+     * 0: simple
+     * 1: gaussian-blur
+     * 2: gaussian-pyramid
+     */
+    uint32_t m_tracking_mode=0;
+    // =======================================
+    // =======================================
+
 
     void train_sdf(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_image(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -490,12 +525,15 @@ public:
 	ETestbedMode m_testbed_mode = ETestbedMode::Sdf;
 	bool m_max_level_rand_training = false;
 
+    // =======================================
+    // =======================================
     // Tracking related vars
     uint32_t m_tracking_kernel_window_size=5;
     uint32_t m_sample_away_from_border_margin_w=0;
     uint32_t m_sample_away_from_border_margin_h=0;
     float m_tracking_loss=0.f;
     float m_tracking_loss_depth=0.f;
+    bool m_tracking_use_depth_var_in_loss=false;
 
     float m_tracking_pos_gradient_norm=0.f;
     float m_tracking_rot_gradient_norm=0.f;
@@ -624,6 +662,8 @@ public:
 
 			std::vector<Eigen::Vector3f> cam_rot_gradient;
 			tcnn::GPUMemory<Eigen::Vector3f> cam_rot_gradient_gpu;
+
+            std::vector<float> tracking_gradients_super_rays;
 
 			tcnn::GPUMemory<Eigen::Array3f> cam_exposure_gpu;
 			std::vector<Eigen::Array3f> cam_exposure_gradient;

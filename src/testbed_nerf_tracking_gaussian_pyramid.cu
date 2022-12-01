@@ -34,94 +34,25 @@ namespace fs = filesystem;
 
 NGP_NAMESPACE_BEGIN
 
-
-std::vector<float> Testbed::make_gaussian_kernel_debug(const uint32_t kernel_size, const float sigma) {
-
+std::vector<float> Testbed::make_5tap_kernel() {
+    uint32_t kernel_size = 5;
     std::vector<float> kernel(kernel_size * kernel_size);
 
-    if (kernel_size==1) {
-        kernel[0] = 1.f;
-        return kernel;
-    }
+    float a = 3.0 / 8.0;
+    std::vector<float> tmp{0.25f - a * 0.5f, 0.25f, a, 0.25f, 0.25f - a * 0.5f};
 
-    uint32_t hw = kernel_size / 2;
-
-    // const double pi = 3.14159265358979323846;
     uint32_t cpt=0;
-    float norm = 0.0f;
     for (uint32_t i=0; i < kernel_size; i++){
         for (uint32_t j=0; j < kernel_size; j++){
-
-            // float g = 1/(2*pi*sigma*sigma) * std::exp( -( static_cast<float>( (i-hw)*(i-hw) + (j-hw)*(j-hw) ) ) / static_cast<float>(2*sigma*sigma) );
-            float g =  std::exp( -( static_cast<float>( (i-hw)*(i-hw) + (j-hw)*(j-hw) ) ) / static_cast<float>(2*sigma*sigma) );
-
-            kernel[cpt] = g;
-            norm += g;
+            kernel[cpt] = tmp[i] * tmp[j];
             ++cpt;
         }
     }
-
-    cpt=0;
-    for (uint32_t i=0; i < kernel_size; i++){
-        for (uint32_t j=0; j < kernel_size; j++){
-            kernel[cpt] /= norm;
-            ++cpt;
-        }
-    }
-
     return kernel;
 }
 
-__global__ void sample_training_pixels_for_tracking(
-	const uint32_t n_rays,
-    const uint32_t ray_stride,
-	default_rng_t rng,
-    const uint32_t kernel_window_size,
-    const uint32_t sample_away_from_border_margin_h,
-    const uint32_t sample_away_from_border_margin_w,
-	const TrainingImageMetadata* __restrict__ metadata,
-	const uint32_t indice_image_for_tracking_pose,
-	bool snap_to_pixel_centers,
-    float* __restrict__ xy_image_pixel_indices,
-    uint32_t* __restrict__ xy_image_pixel_indices_int
-) {
-	const uint32_t super_i = threadIdx.x + blockIdx.x * blockDim.x;
-	if (super_i >= n_rays) return;
 
-    uint32_t img = indice_image_for_tracking_pose;
-    uint32_t half_kernel_window_size = kernel_window_size / 2;
-
-	Eigen::Vector2i resolution = metadata[img].resolution;
-	Eigen::Vector2i margins = Eigen::Vector2i(sample_away_from_border_margin_w, sample_away_from_border_margin_h);
-	Eigen::Vector2i half_kernel_size = Eigen::Vector2i(half_kernel_window_size, half_kernel_window_size);
-
-	rng.advance(super_i * N_MAX_RANDOM_SAMPLES_PER_RAY());
-	Vector2f xy = nerf_random_image_pos_for_tracking(rng, resolution, snap_to_pixel_centers, margins, half_kernel_size);
-
-    uint32_t base_i = super_i * ray_stride * 2;
-    uint32_t cpt=0;
-    Vector2f resolution_float = resolution.cast<float>();
-    Vector2f half_kernel_size_float = half_kernel_size.cast<float>();
-    // populate xy_image_pixel_indices with nearby indices  (within window)
-	for (uint32_t u = 0; u < kernel_window_size; ++u) {
-	    for (uint32_t v = 0; v < kernel_window_size; ++v) {
-
-            Vector2i tmp_uv = Vector2i(v,u);
-            Vector2f tmp_d = (tmp_uv.cast<float>() - half_kernel_size_float).cwiseQuotient(resolution_float);
-            Vector2f tmp_xy = xy + tmp_d;
-            xy_image_pixel_indices[base_i + cpt] = tmp_xy.x();
-            xy_image_pixel_indices[base_i + cpt + 1] = tmp_xy.y();
-
-            Vector2i pixel_indices_int = image_pos(tmp_xy, resolution);
-            xy_image_pixel_indices_int[base_i + cpt] = pixel_indices_int.x();
-            xy_image_pixel_indices_int[base_i + cpt + 1] = pixel_indices_int.y();
-
-            cpt+=2;
-        }
-    }
-}
-
-__global__ void generate_training_samples_for_tracking(
+__global__ void generate_training_samples_for_tracking_gp(
 	const uint32_t n_rays,
 	BoundingBox aabb,
 	const uint32_t max_samples,
@@ -142,10 +73,15 @@ __global__ void generate_training_samples_for_tracking(
 	uint32_t n_extra_dims,
 	const uint32_t indice_image_for_tracking_pose,
 	int32_t* __restrict__ mapping_indices,
+    const uint32_t* __restrict__ existing_ray_mapping_gpu,
     const float* __restrict__ xy_image_pixel_indices
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
+
+	mapping_indices[i] = -1; //  default to "not existing"
+
+    if (existing_ray_mapping_gpu[i]!=i) return;
 
     uint32_t img = indice_image_for_tracking_pose;
 
@@ -153,8 +89,6 @@ __global__ void generate_training_samples_for_tracking(
 
 	rng.advance(i * N_MAX_RANDOM_SAMPLES_PER_RAY());
     Vector2f xy = Vector2f(xy_image_pixel_indices[2*i], xy_image_pixel_indices[2*i+1]);
-
-	mapping_indices[i] = -1; //  default to not existing
 
 	// Negative values indicate masked-away regions
 	size_t pix_idx = pixel_idx(xy, resolution, 0);
@@ -266,7 +200,7 @@ __global__ void generate_training_samples_for_tracking(
 }
 
 
-__global__ void compute_depth_variance(
+__global__ void compute_depth_variance_gp(
 	const uint32_t n_rays,
 	BoundingBox aabb,
 	const uint32_t* __restrict__ ray_counter,
@@ -329,7 +263,7 @@ __global__ void compute_depth_variance(
 
 
 
-__global__ void compute_GT_and_reconstructed_rgbd(
+__global__ void compute_GT_and_reconstructed_rgbd_gp(
 	const uint32_t n_rays,
 	BoundingBox aabb,
 	default_rng_t rng,
@@ -478,20 +412,134 @@ __global__ void compute_GT_and_reconstructed_rgbd(
 }
 
 
+__global__ void convolution_gaussian_pyramid(
+	const uint32_t n_target_rays,
+	const uint32_t n_input_rays,
+    const uint32_t window_size_input,
+    const uint32_t window_size_output,
+    const uint32_t ray_stride_input,
+    const uint32_t ray_stride_output,
+    const float* __restrict__ kernel,
+    const uint32_t* __restrict__ existing_ray_mapping_gpu,
+    const int32_t* __restrict__ mapping_indices,
+    float* __restrict__ gt_rgbd_input,
+    float* __restrict__ rec_rgbd_input,
+    float* __restrict__ gt_rgbd_output,
+    float* __restrict__ rec_rgbd_output,
+    float* __restrict__ gradients
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_target_rays) { return; }
 
-__global__ void compute_loss(
+    // given i compute the window indices in input array
+    // to do so first compute position of pixel at level
+    // j = i%ray_strid_at_level # get the super ray indice
+    // u = j / window_size_at_level
+    // v = j % window_size_at_level;
+    uint32_t i_prime = i / ray_stride_output;
+    uint32_t j = i % ray_stride_output;
+    uint32_t u = j / window_size_output;
+    uint32_t v = j % window_size_output;
+
+    // get corresponding indices in input array
+    // get the start index of the super ray in input
+    // a = j * ray_strid_at_prev_level
+    // u_prime = u * 2 + 2
+    // v_prime = v * 2 + 2
+    uint32_t a = i_prime * ray_stride_input;
+    uint32_t u_prime = u * 2 + 2;
+    uint32_t v_prime = v * 2 + 2;
+
+    // loop thru n = u_prime - kernel_ws/2 to u_prime + ws/2 +1
+    // loop thru m = v_prime - kernel_ws/2 to v_prime + ws/2 +1
+    // map (n,m,a) to index in input array
+    // index = a + n * window_size_at_prev_level + m
+    uint32_t cpt=0;
+	Array3f rec_rgb = Array3f::Zero();
+	Array3f gt_rgb = Array3f::Zero();
+    float rec_depth=0.f;
+    float gt_depth=0.f;
+    uint32_t index;
+    uint32_t index_map;
+    uint32_t gi;
+
+    float norm=0.f;
+    float norm_depth=0.f;
+
+    for (uint32_t n=(u_prime-2); n<(u_prime+2+1); ++n) {
+        for (uint32_t m=(v_prime-2); m<(v_prime+2+1); ++m) {
+            index = a + n * window_size_input + m;
+            //if mapping check mapped index
+            if (existing_ray_mapping_gpu) {
+                index_map = existing_ray_mapping_gpu[index];
+            } else {
+                index_map = index;
+            }
+
+            if (mapping_indices) {
+                int32_t ray_idx = mapping_indices[index_map];
+                if (ray_idx < 0) {
+                    continue;
+                }
+            }
+
+            norm += kernel[cpt];
+
+            gt_rgb.x() += kernel[cpt] * gt_rgbd_input[index_map*4+0];
+            gt_rgb.y() += kernel[cpt] * gt_rgbd_input[index_map*4+1];
+            gt_rgb.z() += kernel[cpt] * gt_rgbd_input[index_map*4+2];
+
+            rec_rgb.x() += kernel[cpt] * rec_rgbd_input[index_map*4+0];
+            rec_rgb.y() += kernel[cpt] * rec_rgbd_input[index_map*4+1];
+            rec_rgb.z() += kernel[cpt] * rec_rgbd_input[index_map*4+2];
+            rec_depth   += kernel[cpt] * rec_rgbd_input[index_map*4+3];
+
+
+            float tmp_gt_depth = gt_rgbd_input[index_map*4+3];
+            if (tmp_gt_depth > 0) {
+                gt_depth   += kernel[cpt] * tmp_gt_depth;
+                norm_depth += kernel[cpt];
+            }
+
+            gi = i * n_input_rays + index;
+            gradients[gi] = kernel[cpt];
+
+            ++cpt;
+        }
+    }
+
+    if (norm > 0) {
+        gt_rgb /= norm;
+        rec_rgb /= norm;
+        rec_depth /= norm;
+    }
+
+    if (norm_depth>0) {
+        gt_depth /= norm_depth;
+    }
+
+    gt_rgbd_output[i*4+0] = gt_rgb.x();
+    gt_rgbd_output[i*4+1] = gt_rgb.y();
+    gt_rgbd_output[i*4+2] = gt_rgb.z();
+    gt_rgbd_output[i*4+3] = gt_depth;
+
+    rec_rgbd_output[i*4+0] = rec_rgb.x();
+    rec_rgbd_output[i*4+1] = rec_rgb.y();
+    rec_rgbd_output[i*4+2] = rec_rgb.z();
+    rec_rgbd_output[i*4+3] = rec_depth;
+
+}
+
+__global__ void compute_loss_gp(
 	const uint32_t n_rays,
 	ELossType loss_type,
 	ELossType depth_loss_type,
 	float* __restrict__ loss_output,
 	float* __restrict__ loss_depth_output,
-    const uint32_t ray_stride,
-	const uint32_t kernel_window_size,
-	const int32_t* __restrict__ mapping_indices,
-	const float* __restrict__ ground_truth_rgbd,
+    const bool use_depth_var_in_loss,
+    const float* __restrict__ ground_truth_rgbd,
 	const float* __restrict__ reconstructed_rgbd,
 	const float* __restrict__ reconstructed_depth_var,
-    const float* __restrict__ kernel,
 	float* __restrict__ losses_and_gradients,
 	uint32_t* __restrict__ super_ray_counter,
 	uint32_t* __restrict__ super_ray_counter_depth
@@ -500,141 +548,47 @@ __global__ void compute_loss(
 	const uint32_t super_i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (super_i >= n_rays) { return; }
 
-    // avg values within window
-	float avg_depth_ray = 0.f;
-	Array3f avg_rgb_ray = Array3f::Zero();
-	float avg_depth_ray_var = 0.f;
+    uint32_t num_super_rays_in_loss = atomicAdd(super_ray_counter, 1);	 // first entry in the array is a counter
 
-    float avg_depth_ray_target = 0.f;
-	Array3f avg_rgb_ray_target = Array3f::Zero();
+	Array3f avg_rgb_ray {
+        reconstructed_rgbd[super_i*4+0],
+        reconstructed_rgbd[super_i*4+1],
+        reconstructed_rgbd[super_i*4+2]
+    };
+	float avg_depth_ray = reconstructed_rgbd[super_i*4+3];
 
-    float norm = 0.f;
-    float norm_depth = 0.f;
+    Array3f avg_rgb_ray_target {
+        ground_truth_rgbd[super_i*4+0],
+        ground_truth_rgbd[super_i*4+1],
+        ground_truth_rgbd[super_i*4+2]
+    };
+    float avg_depth_ray_target = ground_truth_rgbd[super_i*4+3];
 
-    uint32_t i;
-    uint32_t base_i = super_i*ray_stride;
-
-    uint32_t cpt=0;
-    bool is_there_at_least_one_ray_in_super_ray=false;
-    bool is_there_at_least_one_depth_ray_in_super_ray=false;
-    for (uint32_t u = 0; u < kernel_window_size; ++u) {
-	    for (uint32_t v = 0; v < kernel_window_size; ++v) {
-
-            i = base_i + cpt;
-
-            int32_t ray_idx = mapping_indices[i];
-
-            if (ray_idx < 0){
-                //NOTE: if a ray is missing we can also discard the super ray.
-                // ie break istead of continue
-                continue;
-                cpt++;
-            }
-
-            is_there_at_least_one_ray_in_super_ray=true;
-
-	        Array3f rgb_ray = {
-                reconstructed_rgbd[4*ray_idx],
-                reconstructed_rgbd[4*ray_idx+1],
-                reconstructed_rgbd[4*ray_idx+2],
-            };
-
-
-            avg_rgb_ray += kernel[cpt] * rgb_ray;
-
-	        Array3f rgb_ray_target = {
-                ground_truth_rgbd[4*ray_idx],
-                ground_truth_rgbd[4*ray_idx+1],
-                ground_truth_rgbd[4*ray_idx+2],
-            };
-
-            avg_rgb_ray_target += kernel[cpt] * rgb_ray_target;
-
-            norm += kernel[cpt];
-
-            float depth_ray = reconstructed_rgbd[4*ray_idx+3];
-            float depth_ray_var = reconstructed_depth_var[ray_idx];
-
-            float depth_ray_target = ground_truth_rgbd[4*ray_idx+3];
-            // handle cases where depth is 0.0 or -1.0
-            if (depth_ray_target > 0.0) {
-                avg_depth_ray += kernel[cpt] * depth_ray;
-                avg_depth_ray_target += kernel[cpt] * depth_ray_target;
-                norm_depth += kernel[cpt];
-	            avg_depth_ray_var += kernel[cpt] * depth_ray_var;
-                is_there_at_least_one_depth_ray_in_super_ray=true;
-            }
-
-            cpt++;
-        }
+    if (use_depth_var_in_loss) {
+        //TODO: include depth_var in loss?
+	    // float avg_depth_ray_var = reconstructed_depth_var[super_i];
     }
 
-    losses_and_gradients[super_i*10+0] = 0.0f;
-    losses_and_gradients[super_i*10+1] = 0.0f;
-    losses_and_gradients[super_i*10+2] = 0.0f;
-    losses_and_gradients[super_i*10+3] = 0.0f;
-    losses_and_gradients[super_i*10+4] = 0.0f;
-    losses_and_gradients[super_i*10+5] = 0.0f;
-    losses_and_gradients[super_i*10+6] = 0.0f;
-    losses_and_gradients[super_i*10+7] = 0.0f;
-    losses_and_gradients[super_i*10+8] = -1;
-    losses_and_gradients[super_i*10+9] = -1;
-
-    //If all rays in super ray have 0 numsteps
-    if (!is_there_at_least_one_ray_in_super_ray){
-        return;
-    }
-
-	uint32_t num_super_rays_in_loss = atomicAdd(super_ray_counter, 1);	 // first entry in the array is a counter
-
-    avg_rgb_ray /= norm;
-    avg_rgb_ray_target /= norm;
-
-    if (is_there_at_least_one_depth_ray_in_super_ray){
-        avg_depth_ray /= norm_depth;
-        avg_depth_ray_target /= norm_depth;
-        avg_depth_ray_var /= norm_depth;
-	    uint32_t num_super_rays_depth_in_loss = atomicAdd(super_ray_counter_depth, 1);	 // first entry in the array is a counter
-    } else {
-	    avg_depth_ray = 0.f;
-        avg_depth_ray_target = 0.f;
-	    avg_depth_ray_var = 0.f;
-    }
-
-
-	// Step again, this time computing loss
     LossAndGradient lg = loss_and_gradient(avg_rgb_ray_target, avg_rgb_ray, loss_type);
-	LossAndGradient lg_depth = loss_and_gradient(Array3f::Constant(avg_depth_ray_target), Array3f::Constant(avg_depth_ray), depth_loss_type);
+    LossAndGradient lg_depth;
 
-    // if ((lg_depth.loss.x()==0) or (norm_depth<=1e-4f)) {
-    if ((lg_depth.loss.x()==0.f)) {
+    if (avg_depth_ray_target>0) {
+	    lg_depth = loss_and_gradient(Array3f::Constant(avg_depth_ray_target), Array3f::Constant(avg_depth_ray), depth_loss_type);
+
+        if ((lg_depth.loss.x()==0.f)) {
+            lg_depth.gradient.x() = 0.f;
+        }
+	    uint32_t num_super_rays_depth_in_loss = atomicAdd(super_ray_counter_depth, 1);	 // first entry in the array is a counter
+
+    } else {
+	    lg_depth = loss_and_gradient(Array3f::Constant(0.f), Array3f::Constant(0.f), depth_loss_type);
         lg_depth.gradient.x() = 0.f;
     }
 
-    if (is_there_at_least_one_depth_ray_in_super_ray) {
-        if (avg_depth_ray_var > 1e-6) {
-            lg_depth.loss.x() /= sqrt(avg_depth_ray_var);
-            lg_depth.gradient.x() /= sqrt(avg_depth_ray_var);
-        } else {
-            lg_depth.loss.x() /= sqrt(1e-6);
-            lg_depth.gradient.x() /= sqrt(1e-6);
-        }
-    }
-
-
-    losses_and_gradients[super_i*10+0] = lg.loss.x();
-    losses_and_gradients[super_i*10+1] = lg.loss.y();
-    losses_and_gradients[super_i*10+2] = lg.loss.z();
-    losses_and_gradients[super_i*10+3] = lg.gradient.x();
-    losses_and_gradients[super_i*10+4] = lg.gradient.y();
-    losses_and_gradients[super_i*10+5] = lg.gradient.z();
-
-    losses_and_gradients[super_i*10+6] = lg_depth.loss.x();
-    losses_and_gradients[super_i*10+7] = lg_depth.gradient.x();
-
-    losses_and_gradients[super_i*10+8] = norm;
-    losses_and_gradients[super_i*10+9] = norm_depth;
-
+    losses_and_gradients[super_i*4+0] = lg.gradient.x();
+    losses_and_gradients[super_i*4+1] = lg.gradient.y();
+    losses_and_gradients[super_i*4+2] = lg.gradient.z();
+    losses_and_gradients[super_i*4+3] = lg_depth.gradient.x();
 
     float mean_loss = lg.loss.mean();
 	if (loss_output) {
@@ -646,12 +600,39 @@ __global__ void compute_loss(
 }
 
 
+__global__ void backprop_thru_convs(
+    const uint32_t input_n_rays,
+    const uint32_t output_n_rays, //  conv output n_rays
+    const float* __restrict__ prev_partials,
+    const float* __restrict__ gradients,
+    float* __restrict__ new_partials
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= input_n_rays) { return; }
+
+	Array3f rgb_grad = Array3f::Zero();
+    float depth_grad = 0;
+    for (uint32_t j=0; j<output_n_rays; ++j) {
+
+        uint32_t index = j * input_n_rays + i;
+
+        rgb_grad.x() += gradients[index] * prev_partials[j*4+0];
+        rgb_grad.y() += gradients[index] * prev_partials[j*4+1];
+        rgb_grad.z() += gradients[index] * prev_partials[j*4+2];
+
+        depth_grad += gradients[index] * prev_partials[j*4+3];
+
+    }
+
+    new_partials[i*4+0] = rgb_grad.x();
+    new_partials[i*4+1] = rgb_grad.y();
+    new_partials[i*4+2] = rgb_grad.z();
+    new_partials[i*4+3] = depth_grad;
+}
 
 
-
-__global__ void compute_gradient(
+__global__ void compute_gradient_gp(
 	const uint32_t n_rays,
-	const uint32_t n_effective_rays,
 	BoundingBox aabb,
 	float loss_scale,
 	int padded_output_width,
@@ -674,45 +655,33 @@ __global__ void compute_gradient(
 	const float* __restrict__ mean_density_ptr,
 	float depth_supervision_lambda,
 	float near_distance,
-    const uint32_t ray_stride,
-	const uint32_t kernel_window_size,
     float* __restrict__ xy_image_pixel_indices,
 	const int32_t* __restrict__ mapping_indices,
 	const float* __restrict__ ground_truth_rgbd,
 	const float* __restrict__ reconstructed_rgbd,
 	const uint32_t* __restrict__ ray_counter,
-    const float* __restrict__ kernel,
-	const uint32_t n_super_rays,
+    const uint32_t* __restrict__ existing_ray_mapping_gpu,
 	float* __restrict__ losses_and_gradients,
 	const uint32_t* __restrict__ super_ray_counter,
 	const uint32_t* __restrict__ super_ray_counter_depth
 ) {
 
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
-	//if (i >= *ray_counter) { return; }
-	if (i >= n_effective_rays) { return; }
+	if (i >= n_rays) { return; }
 
-    int32_t ray_idx = mapping_indices[i];
+    uint32_t prev_i = existing_ray_mapping_gpu[i];
+
+    int32_t ray_idx = mapping_indices[prev_i];
 
     if (ray_idx < 0){
         return;
     }
 
-    uint32_t super_i = i / ray_stride;
-    uint32_t cpt = i % ray_stride;
-
-    // uint32_t u = cpt / kernel_window_size;
-    // uint32_t v = cpt % kernel_window_size;
-
     Array3f dloss_db = {
-        losses_and_gradients[super_i*10+3],
-        losses_and_gradients[super_i*10+4],
-        losses_and_gradients[super_i*10+5]
+        losses_and_gradients[i*4+0],
+        losses_and_gradients[i*4+1],
+        losses_and_gradients[i*4+2]
     };
-
-    float norm = losses_and_gradients[super_i*10+8];
-
-    float norm_depth = losses_and_gradients[super_i*10+9];
 
     Array3f rgb_ray = {
         reconstructed_rgbd[4*ray_idx],
@@ -724,7 +693,7 @@ __global__ void compute_gradient(
 
     float depth_ray_target = ground_truth_rgbd[4*ray_idx+3];
 
-    float depth_loss_gradient = depth_ray_target > 0.0f ? depth_supervision_lambda * losses_and_gradients[super_i*10+7] : 0;
+    float depth_loss_gradient = depth_ray_target > 0.0f ? depth_supervision_lambda * losses_and_gradients[i*4+3] : 0;
 
     uint32_t total_n_rays = *super_ray_counter;
     uint32_t total_n_rays_depth = *super_ray_counter_depth;
@@ -736,10 +705,6 @@ __global__ void compute_gradient(
     } else {
         loss_scale_depth = 0.0;
     }
-    // loss_scale /= total_n_rays;
-    // float loss_scale_rgb = loss_scale;
-    // float loss_scale_depth = loss_scale;
-    // printf(" %f, %f |", loss_scale_rgb, loss_scale_depth);
 
     // No regularization for pose optimization
     const float output_l2_reg = rgb_activation == ENerfActivation::Exponential ? 1e-4f : 0.0f;
@@ -766,22 +731,6 @@ __global__ void compute_gradient(
 
 	Eigen::Vector3f ray_o = rays_in_unnormalized[ray_idx].o;
 
-
-    // No losses and gradients for this ray.
-    // zero-out all its gradients.
-    if (norm < 0) {
-        // for (uint32_t j=0; j < numsteps_compact; ++j) {
-
-        //     tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput = {0.0,0.0,0.0,0.0};
-
-	    //     *(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput = local_dL_doutput;
-
-	    //     dloss_doutput += padded_output_width;
-        // }
-        return;
-    }
-
-
     for (uint32_t j=0; j < numsteps_compact; ++j) {
 
         // Compact network inputs
@@ -804,7 +753,7 @@ __global__ void compute_gradient(
 
 	    // we know the suffix of this ray compared to where we are up to. note the suffix depends on this step's alpha as suffix = (1-alpha)*(somecolor), so dsuffix/dalpha = -somecolor = -suffix/(1-alpha)
 	    const Array3f suffix = rgb_ray - rgb_ray2;
-	    const Array3f dloss_by_drgb = weight * dloss_db * kernel[cpt] / norm;
+	    const Array3f dloss_by_drgb = dloss_db;
 
 	    tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput;
 
@@ -819,10 +768,10 @@ __global__ void compute_gradient(
         // if no target depth for that ray then no depth supervision
         float depth_supervision = 0.0f;
         if (depth_ray_target > 0.0f) {
-	        depth_supervision = depth_loss_gradient * (kernel[cpt] / norm_depth) * (T * depth - depth_suffix);
+	        depth_supervision = depth_loss_gradient * (T * depth - depth_suffix);
         }
 
-	    const Array3f tmp = dloss_db * kernel[cpt] / norm;
+	    const Array3f tmp = dloss_db;
 	    float dloss_by_dmlp = density_derivative * (
 	    	dt * (loss_scale_rgb / 3.0 * tmp.matrix().dot((T * rgb - suffix).matrix()) + loss_scale_depth * depth_supervision)
 	    );
@@ -842,7 +791,7 @@ __global__ void compute_gradient(
 
 
 
-__global__ void compute_camera_gradient(
+__global__ void compute_camera_gradient_gp(
 	const uint32_t n_rays,
 	const BoundingBox aabb,
 	const uint32_t* __restrict__ rays_counter,
@@ -860,7 +809,9 @@ __global__ void compute_camera_gradient(
 	const Vector2i distortion_resolution,
 	Vector2f* cam_focal_length_gradient,
 	const uint32_t indice_image_for_tracking_pose,
-    float* __restrict__ xy_image_pixel_indices
+    const float* __restrict__ xy_image_pixel_indices,
+    const uint32_t ray_stride,
+    float* __restrict__ super_ray_gradients
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -881,6 +832,7 @@ __global__ void compute_camera_gradient(
 	uint32_t ray_idx = ray_indices[i];
     uint32_t img = indice_image_for_tracking_pose;
 
+
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
 	const Matrix<float, 3, 4>& xform = training_xforms[img].start;
@@ -894,7 +846,15 @@ __global__ void compute_camera_gradient(
 		// pos = ray.o + t * ray.d;
 
 		const Vector3f warped_pos = coords(j)->pos.p;
-		const Vector3f pos_gradient = coords_gradient(j)->pos.p.cwiseProduct(warp_position_derivative(warped_pos, aabb));
+		Vector3f pos_gradient = coords_gradient(j)->pos.p.cwiseProduct(warp_position_derivative(warped_pos, aabb));
+        // in case gradient are nan at this point
+        if ( isnan(pos_gradient.x()) or isnan(pos_gradient.y()) or isnan(pos_gradient.z())
+          or isinf(pos_gradient.x()) or isinf(pos_gradient.y()) or isinf(pos_gradient.z()) ) {
+                pos_gradient.x() = 0.f;
+                pos_gradient.y() = 0.f;
+                pos_gradient.z() = 0.f;
+        }
+
 		ray_gradient.o += pos_gradient;
 
 		const Vector3f pos = unwarp_position(warped_pos, aabb);
@@ -902,9 +862,26 @@ __global__ void compute_camera_gradient(
 		// Scaled by t to account for the fact that further-away objects' position
 		// changes more rapidly as the direction changes.
 		float t = (pos - ray.o).norm();
-		const Vector3f dir_gradient = coords_gradient(j)->dir.d.cwiseProduct(warp_direction_derivative(coords(j)->dir.d));
+		Vector3f dir_gradient = coords_gradient(j)->dir.d.cwiseProduct(warp_direction_derivative(coords(j)->dir.d));
+
+        // in case gradient are nan at this point
+        if ( isnan(dir_gradient.x()) or isnan(dir_gradient.y()) or isnan(dir_gradient.z())
+          or isinf(dir_gradient.x()) or isinf(dir_gradient.y()) or isinf(dir_gradient.z()) ) {
+                dir_gradient.x() = 0.f;
+                dir_gradient.y() = 0.f;
+                dir_gradient.z() = 0.f;
+        }
+
 		ray_gradient.d += pos_gradient * t + dir_gradient;
 	}
+
+    uint32_t super_i = ray_idx / ray_stride;
+    super_ray_gradients[super_i * 6 + 0] += ray_gradient.o.x();
+    super_ray_gradients[super_i * 6 + 1] += ray_gradient.o.y();
+    super_ray_gradients[super_i * 6 + 2] += ray_gradient.o.z();
+    super_ray_gradients[super_i * 6 + 3] += ray_gradient.d.x();
+    super_ray_gradients[super_i * 6 + 4] += ray_gradient.d.y();
+    super_ray_gradients[super_i * 6 + 5] += ray_gradient.d.z();
 
 	float xy_pdf = 1.0f;
     Vector2f xy = Vector2f(xy_image_pixel_indices[2*ray_idx], xy_image_pixel_indices[2*ray_idx+1]);
@@ -946,28 +923,145 @@ __global__ void compute_camera_gradient(
 	}
 }
 
+void Testbed::sample_pixels_for_tracking_with_gaussian_pyramid(
+    const uint32_t max_rays_per_batch,
+    uint32_t& ray_counter,
+    uint32_t& super_ray_counter,
+    uint32_t& ray_counter_for_gradient,
+    std::vector<float>& xy_image_pixel_indices,
+    std::vector<uint32_t>& xy_image_pixel_indices_int,
+    std::vector<uint32_t>& xy_image_super_pixel_at_level_indices_int_cpu,
+    std::vector<uint32_t>& ray_mapping,
+    const bool snap_to_pixel_centers,
+    const uint32_t sample_away_from_border_margin_h,
+    const uint32_t sample_away_from_border_margin_w,
+    default_rng_t& rng,
+    const std::vector<int>& rf,
+    const uint32_t& super_ray_window_size,
+    const uint32_t& ray_stride,
+	const Vector2i& resolution,
+    const Vector2i& resolution_at_level,
+    const uint32_t& level
+) {
+    //TODO: try to preset vector dimensions (then use cpt)
+    // and see if it's faster
 
-void Testbed::reset_camera_optimizer(uint32_t cam_id) {
-    m_nerf.training.cam_pos_offset[cam_id].reset_state();
-    m_nerf.training.cam_rot_offset[cam_id].reset_state();
+    // get the at level sampling margins
+    int margin_r = (int) ceil(((float) (sample_away_from_border_margin_h + (uint32_t) rf[1])) / pow(2.0, (float) level));
+    int margin_c = (int) ceil(((float) (sample_away_from_border_margin_w + (uint32_t) rf[3])) / pow(2.0, (float) level));
+    Vector2i margins_at_level(margin_c, margin_r);
+    Vector2i bounds_at_level = resolution_at_level - 2*margins_at_level;
+
+    //init vars
+    Vector2f rng_xy;
+    Vector2i xy_at_level_int;
+    Vector2f xy_at_level;
+    Vector2f xy;
+    Vector2i half_kernel_size(rf[1], rf[3]);
+    Vector2f half_kernel_size_float = half_kernel_size.cast<float>();
+    Vector2i tmp_uv;
+    Vector2f tmp_d;
+    Vector2f tmp_xy_int;
+    Vector2f tmp_xy;
+    uint32_t key;
+
+    uint32_t cpt=0;
+    std::unordered_map<uint32_t, uint32_t> tmp_dict;
+    while ( (ray_counter + ray_stride) < max_rays_per_batch) {
+
+        ++super_ray_counter;
+
+        // sample a pixel at level
+        rng_xy.x() = rng.next_float();
+        rng_xy.y() = rng.next_float();
+
+        xy_at_level_int = rng_xy.cwiseProduct(bounds_at_level.cast<float>()).cast<int>();
+        xy_at_level_int = xy_at_level_int + margins_at_level; // sampled pixel (int) at level
+
+        xy_at_level_int = xy_at_level_int.cwiseMax(margins_at_level).cwiseMin(resolution_at_level - margins_at_level - Vector2i::Ones());
+
+        xy_image_super_pixel_at_level_indices_int_cpu.push_back(xy_at_level_int.x());
+        xy_image_super_pixel_at_level_indices_int_cpu.push_back(xy_at_level_int.y());
+
+        xy_at_level = xy_at_level_int.cast<float>();
+
+        // grab the corresponding pixels in OG rez
+        xy = xy_at_level * pow(2.0, (float) level);
+
+        // populate the output vectors
+	    for (uint32_t u = 0; u < super_ray_window_size; ++u) {
+	        for (uint32_t v = 0; v < super_ray_window_size; ++v) {
+
+                ++ray_counter;
+
+                tmp_uv = Vector2i(v,u);
+                tmp_d = tmp_uv.cast<float>() - half_kernel_size_float;
+                tmp_xy_int = xy + tmp_d;
+
+	            if (snap_to_pixel_centers) {
+	            	tmp_xy = (tmp_xy_int + Vector2f::Constant(0.5f)).cwiseQuotient(resolution.cast<float>());
+	            } else {
+	            	tmp_xy = tmp_xy_int.cwiseQuotient(resolution.cast<float>());
+                }
+
+                xy_image_pixel_indices.push_back(tmp_xy.x());
+                xy_image_pixel_indices.push_back(tmp_xy.y());
+
+                xy_image_pixel_indices_int.push_back(tmp_xy_int.x());
+                xy_image_pixel_indices_int.push_back(tmp_xy_int.y());
+
+                // check if ray exists
+                key = tmp_xy_int.x() + tmp_xy_int.y() * resolution.x();
+                if (tmp_dict.count(key) == 0) {
+                    ray_mapping.push_back(cpt);
+                    tmp_dict[key] = cpt;
+                    ++ray_counter_for_gradient;
+                } else {
+                    ray_mapping.push_back(tmp_dict[key]);
+                }
+
+                ++cpt;
+
+            }
+        }
+
+    }
+
 }
 
-void Testbed::track_pose_nerf_slam_opti(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
+void Testbed::get_receptive_field_of_gaussian_pyramid_at_level(uint32_t level, std::vector<int>& rf) {
+    if (rf.empty()){
+        rf = {0,0,0,0};
+    }
+    if (level==0){
+        return;
+    } else {
+        rf[0] = 2*rf[0] - 2;
+        rf[1] = 2*rf[1] + 2;
+        rf[2] = 2*rf[2] - 2;
+        rf[3] = 2*rf[3] + 2;
+        return get_receptive_field_of_gaussian_pyramid_at_level(level-1, rf);
+    }
+}
+
+
+void Testbed::track_pose_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
 
 	if (m_nerf.training.indice_image_for_tracking_pose == 0) {
         // no tracking for first frame.
 		return;
 	}
 
-	m_nerf.training.counters_rgb_track.prepare_for_training_steps(stream);
     m_nerf.training.counters_rgb_track.rays_per_batch = m_nerf.training.rays_per_tracking_batch;
+	m_nerf.training.counters_rgb_track.prepare_for_training_steps(stream);
 
 	if (m_nerf.training.n_steps_since_cam_update_tracking == 0) {
 	    CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_pos_gradient_gpu.data(), 0, m_nerf.training.cam_pos_gradient_gpu.get_bytes(), stream));
 	    CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_rot_gradient_gpu.data(), 0, m_nerf.training.cam_rot_gradient_gpu.get_bytes(), stream));
+        m_nerf.training.tracking_gradients_super_rays.clear();
     }
 
-	track_pose_nerf_slam_step_opti(target_batch_size, m_nerf.training.counters_rgb_track, stream);
+	track_pose_gaussian_pyramid_nerf_slam_step(target_batch_size, m_nerf.training.counters_rgb_track, stream);
 
     ++m_training_step_track;
 
@@ -1055,19 +1149,57 @@ void Testbed::track_pose_nerf_slam_opti(uint32_t target_batch_size, bool get_los
 }
 
 
-void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream) {
+void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream) {
 	const uint32_t padded_output_width = m_network->padded_output_width();
 	const uint32_t max_samples = target_batch_size * 16; // Somewhat of a worst case
 	const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
 	const uint32_t extra_stride = m_nerf_network->n_extra_dims() * sizeof(float); // extra stride on top of base NerfCoordinate struct
 
     //NOTE: get settings/hyperparams for tracking
-    const float sigma = m_tracking_sigma_gaussian_kernel;
-    const uint32_t kernel_window_size = m_tracking_kernel_window_size;
-    uint32_t ray_stride = kernel_window_size*kernel_window_size;
-    uint32_t sample_away_from_border_margin_h = m_sample_away_from_border_margin_h;
-    uint32_t sample_away_from_border_margin_w = m_sample_away_from_border_margin_w;
-    uint32_t n_super_rays = counters.rays_per_batch / ray_stride; // get the number of rays for which we have enough room to get the corresponding nearby rays (within window)
+    const uint32_t kernel_window_size = 5;
+    const uint32_t gaussian_pyramid_level = m_tracking_gaussian_pyramid_level;
+    const uint32_t sample_away_from_border_margin_h = m_sample_away_from_border_margin_h;
+    const uint32_t sample_away_from_border_margin_w = m_sample_away_from_border_margin_w;
+
+    //NOTE: get downsized image dimensions
+	Vector2i resolution = m_nerf.training.dataset.metadata[m_nerf.training.indice_image_for_tracking_pose].resolution;
+    Vector2i resolution_at_level = (resolution.cast<float>() / pow(2.0, (float) gaussian_pyramid_level)).cast<int>();
+
+    //NOTE: get receptive field at level L
+    std::vector<int> receptive_field;
+    get_receptive_field_of_gaussian_pyramid_at_level(gaussian_pyramid_level, receptive_field);
+
+    const uint32_t super_ray_window_size = receptive_field[1] * 2 + 1;
+    const uint32_t ray_stride = super_ray_window_size * super_ray_window_size;
+    uint32_t n_super_rays=0;
+    uint32_t n_total_rays=0; // get all rays needed to compute super rays values (pixels at level)
+    uint32_t n_total_rays_for_gradient=0; //  subset of unique rays.
+    std::vector<float> xy_image_pixel_indices_cpu;
+    std::vector<uint32_t> xy_image_super_pixel_at_level_indices_int_cpu;
+    std::vector<uint32_t> xy_image_pixel_indices_int_cpu;
+    std::vector<uint32_t> existing_ray_mapping;
+    sample_pixels_for_tracking_with_gaussian_pyramid(
+        counters.rays_per_batch,
+        n_total_rays,
+        n_super_rays,
+        n_total_rays_for_gradient,
+        xy_image_pixel_indices_cpu,
+        xy_image_pixel_indices_int_cpu,
+        xy_image_super_pixel_at_level_indices_int_cpu,
+        existing_ray_mapping,
+		m_nerf.training.snap_to_pixel_centers,
+        sample_away_from_border_margin_h,
+        sample_away_from_border_margin_w,
+        m_rng,
+        receptive_field,
+        super_ray_window_size,
+        ray_stride,
+	    resolution,
+        resolution_at_level,
+        gaussian_pyramid_level
+    );
+
+    m_nerf.training.sampled_pixels_for_tracking=xy_image_pixel_indices_int_cpu;
 
 	GPUMemoryArena::Allocation alloc;
 	auto scratch = allocate_workspace_and_distribute<
@@ -1084,19 +1216,16 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		uint32_t, // ray_counter
 		float, // xy_pixel_indices
 		int32_t, // mapping_indices
-		float, // ground_truth_rgbd
-		float,  // reconstructed_rgbd
 		uint32_t, // numsteps_compacted
-		float,  // losses_and_gradients
 		uint32_t, // num super rays counter
 		uint32_t, // num super rays counter depth
-		float,  // reconstructed_depth_var
-		uint32_t // xy_pixel_indices_int
+		uint32_t, // mapping of existing rays
+		float  // super ray gradients
 	>(
 		stream, &alloc,
-		counters.rays_per_batch,
-		counters.rays_per_batch,
-		counters.rays_per_batch * 2,
+		n_total_rays_for_gradient,
+		n_total_rays_for_gradient,
+		n_total_rays_for_gradient * 2,
 		max_samples * floats_per_coord,
 		max_samples,
 		std::max(target_batch_size, max_samples) * padded_output_width,
@@ -1105,19 +1234,16 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		target_batch_size * floats_per_coord,
 		target_batch_size,
 		1,
-		counters.rays_per_batch * 2,
-		counters.rays_per_batch,
-		counters.rays_per_batch * 4,
-		counters.rays_per_batch * 4,
-		counters.rays_per_batch * 2,
-		n_super_rays * 10,
+		n_total_rays * 2,
+		n_total_rays, // 12
+		n_total_rays_for_gradient * 2,
         1,
         1,
-		counters.rays_per_batch,
-		counters.rays_per_batch * 2
+		n_total_rays,
+		n_super_rays * 6
 	);
 
-	// TODO: C++17 structured binding
+	// NOTE: C++17 structured binding
 	uint32_t* ray_indices = std::get<0>(scratch);
 	Ray* rays_unnormalized = std::get<1>(scratch);
 	uint32_t* numsteps = std::get<2>(scratch);
@@ -1131,21 +1257,14 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 	uint32_t* ray_counter = std::get<10>(scratch);
 	float* xy_image_pixel_indices = std::get<11>(scratch);
 	int32_t* mapping_indices = std::get<12>(scratch);
-	float* ground_truth_rgbd = std::get<13>(scratch);
-	float* reconstructed_rgbd = std::get<14>(scratch);
-	uint32_t* numsteps_compacted = std::get<15>(scratch);
-	float* losses_and_gradients = std::get<16>(scratch);
-	uint32_t* super_ray_counter = std::get<17>(scratch);
-	uint32_t* super_ray_counter_depth = std::get<18>(scratch);
-	float* reconstructed_depth_var = std::get<19>(scratch);
-	uint32_t* xy_image_pixel_indices_int = std::get<20>(scratch);
+	uint32_t* numsteps_compacted = std::get<13>(scratch);
+	uint32_t* super_ray_counter = std::get<14>(scratch);
+	uint32_t* super_ray_counter_depth = std::get<15>(scratch);
+    uint32_t* existing_ray_mapping_gpu = std::get<16>(scratch);
+	float* super_ray_gradients = std::get<17>(scratch);
 
-	uint32_t max_inference;
-	if (counters.measured_batch_size_before_compaction == 0) {
-		counters.measured_batch_size_before_compaction = max_inference = max_samples;
-	} else {
-		max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
-	}
+	uint32_t max_inference = next_multiple(std::min(n_total_rays_for_gradient * 1024, max_samples), tcnn::batch_size_granularity);
+    counters.measured_batch_size_before_compaction = max_inference;
 
 	GPUMatrix<float> coords_matrix((float*)coords, floats_per_coord, max_inference);
 	GPUMatrix<network_precision_t> rgbsigma_matrix(mlp_out, padded_output_width, max_inference);
@@ -1159,21 +1278,22 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		counters.n_rays_total = 0;
 	}
 
-	counters.n_rays_total += counters.rays_per_batch;
-	m_nerf.training.n_rays_since_error_map_update += counters.rays_per_batch;
+	counters.n_rays_total += n_total_rays;
 
     m_track_pose_nerf_num_super_rays_targeted_in_tracking_step=n_super_rays;
 
 	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter_depth, 0, sizeof(uint32_t), stream));
+	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_gradients, 0, n_super_rays * 6 * sizeof(uint32_t), stream));
 
-    // create gaussian kernel
-    std::vector<float> kernel = make_gaussian_kernel_debug(kernel_window_size, sigma);
-
+    // create 5-tap kernel
+    // TODO: move that outside of tracking loop
+    // make kernel __constant__ global var
+    // see http://alexminnaar.com/2019/07/12/implementing-convolutions-in-cuda.html
+    std::vector<float> kernel = make_5tap_kernel();
     tcnn::GPUMemory<float> kernel_gpu;
     kernel_gpu.enlarge(kernel_window_size * kernel_window_size);
-
     CUDA_CHECK_THROW(
        cudaMemcpy(
           kernel_gpu.data(),
@@ -1183,35 +1303,27 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
        )
     );
 
-    //NOTE: get sample xy pixel locations
-    linear_kernel(sample_training_pixels_for_tracking, 0, stream,
-		n_super_rays,
-        ray_stride,
-		m_rng,
-        kernel_window_size,
-        sample_away_from_border_margin_h,
-        sample_away_from_border_margin_w,
-		m_nerf.training.dataset.metadata_gpu.data(),
-        m_nerf.training.indice_image_for_tracking_pose,
-		m_nerf.training.snap_to_pixel_centers,
-        xy_image_pixel_indices,
-        xy_image_pixel_indices_int
-	);
-
-    //DEBUG: check the sampled pixels
-    m_nerf.training.sampled_pixels_for_tracking.resize(counters.rays_per_batch * 2);
+    //NOTE: ship to Device sampled pixels
     CUDA_CHECK_THROW(
        cudaMemcpy(
-          m_nerf.training.sampled_pixels_for_tracking.data(),
-          std::get<20>(scratch),
-          counters.rays_per_batch * 2 * sizeof(uint32_t),
-          cudaMemcpyDeviceToHost
+          std::get<11>(scratch),
+          xy_image_pixel_indices_cpu.data(),
+          n_total_rays * 2 * sizeof(float),
+          cudaMemcpyHostToDevice
+       )
+    );
+    CUDA_CHECK_THROW(
+       cudaMemcpy(
+          std::get<16>(scratch),
+          existing_ray_mapping.data(),
+          n_total_rays * sizeof(uint32_t),
+          cudaMemcpyHostToDevice
        )
     );
 
     //NOTE: get sample along each rays
-	linear_kernel(generate_training_samples_for_tracking, 0, stream,
-		n_super_rays*ray_stride,
+	linear_kernel(generate_training_samples_for_tracking_gp, 0, stream,
+        n_total_rays,
 		m_aabb,
 		max_inference,
 		m_rng,
@@ -1231,20 +1343,20 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		m_nerf_network->n_extra_dims(),
         m_nerf.training.indice_image_for_tracking_pose,
 		mapping_indices,
+        existing_ray_mapping_gpu,
         xy_image_pixel_indices
 	);
 
     //DEBUG: check the sampled pixels
-    m_nerf.training.sampled_ray_indices_for_tracking_gradient.resize(counters.rays_per_batch);
+    m_nerf.training.sampled_ray_indices_for_tracking_gradient.resize(n_total_rays_for_gradient);
     CUDA_CHECK_THROW(
        cudaMemcpy(
           m_nerf.training.sampled_ray_indices_for_tracking_gradient.data(),
           std::get<0>(scratch),
-          counters.rays_per_batch * sizeof(uint32_t),
+          n_total_rays_for_gradient * sizeof(uint32_t),
           cudaMemcpyDeviceToHost
        )
     );
-
 	CUDA_CHECK_THROW(
        cudaMemcpyAsync(
           &m_track_pose_nerf_num_rays_in_tracking_step,
@@ -1255,14 +1367,22 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
        )
     );
 
+    if (m_track_pose_nerf_num_rays_in_tracking_step != n_total_rays_for_gradient) {
+        tlog::warning()<<" num rays for gradient is different than the required num of rays: "<<m_track_pose_nerf_num_rays_in_tracking_step<< " != "<< n_total_rays_for_gradient << ". Consider increasing batch_size";
+    }
 
     //NOTE: get network values for each points
 	m_network->inference_mixed_precision(stream, coords_matrix, rgbsigma_matrix, false);
 
 
+    tcnn::GPUMemory<float> reconstructed_rgbd_gpu;
+    tcnn::GPUMemory<float> ground_truth_rgbd_gpu;
+    reconstructed_rgbd_gpu.enlarge(n_total_rays_for_gradient * 4);
+    ground_truth_rgbd_gpu.enlarge(n_total_rays_for_gradient * 4);
+
     //NOTE: get RGBD values prediciton + GT.
-	linear_kernel(compute_GT_and_reconstructed_rgbd, 0, stream,
-		counters.rays_per_batch,
+	linear_kernel(compute_GT_and_reconstructed_rgbd_gp, 0, stream,
+        n_total_rays_for_gradient,
 		m_aabb,
 		m_rng,
 		target_batch_size,
@@ -1291,51 +1411,142 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		m_nerf.training.depth_supervision_lambda,
         m_nerf.training.indice_image_for_tracking_pose,
         xy_image_pixel_indices,
-        ground_truth_rgbd,
-        reconstructed_rgbd
+        ground_truth_rgbd_gpu.data(),
+        reconstructed_rgbd_gpu.data()
 	);
 
+    //NOTE: get Depth reconstruction variance (ie confidence)
+    tcnn::GPUMemory<float> reconstructed_depth_var_gpu;
+    if (m_tracking_use_depth_var_in_loss) {
+        reconstructed_depth_var_gpu.enlarge(n_total_rays_for_gradient);
+	    linear_kernel(compute_depth_variance_gp, 0, stream,
+            n_total_rays_for_gradient,
+	    	m_aabb,
+	    	ray_counter,
+	    	padded_output_width,
+	    	mlp_out,
+	    	rays_unnormalized,
+	    	numsteps,
+	    	PitchedPtr<const NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
+	    	m_nerf.density_activation,
+            reconstructed_rgbd_gpu.data(),
+            reconstructed_depth_var_gpu.data()
+	    );
+    }
 
-    //NOTE: get RGBD values prediciton + GT.
-	linear_kernel(compute_depth_variance, 0, stream,
-		counters.rays_per_batch,
-		m_aabb,
-		ray_counter,
-		padded_output_width,
-		mlp_out,
-		rays_unnormalized,
-		numsteps,
-		PitchedPtr<const NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
-		m_nerf.density_activation,
-        reconstructed_rgbd,
-        reconstructed_depth_var
-	);
 
+    //NOTE: compute Gaussian pyramids (ie convs)
+    std::vector<tcnn::GPUMemory<float> > ground_truth_rgbd_tensors;
+    std::vector<tcnn::GPUMemory<float> > reconstructed_rgbd_tensors;
+    std::vector<tcnn::GPUMemory<float> > gradients_tensors;
+    std::vector<uint32_t> dimensions;
+
+    uint32_t cur_super_ray_window_size = super_ray_window_size;
+    uint32_t cur_ray_stride = ray_stride;
+    uint32_t cur_dim = n_total_rays;
+
+    ground_truth_rgbd_tensors.push_back(ground_truth_rgbd_gpu);
+    reconstructed_rgbd_tensors.push_back(reconstructed_rgbd_gpu);
+    dimensions.push_back(cur_dim);
+
+    for (size_t l=0; l<gaussian_pyramid_level; ++l) {
+        std::vector<int> tmp_receptive_field;
+        get_receptive_field_of_gaussian_pyramid_at_level(gaussian_pyramid_level-l-1, tmp_receptive_field);
+        uint32_t tmp_super_ray_window_size = tmp_receptive_field[1] * 2 + 1;
+        uint32_t tmp_ray_stride = tmp_super_ray_window_size * tmp_super_ray_window_size;
+        uint32_t tmp_dim = n_super_rays * tmp_ray_stride;
+
+        tcnn::GPUMemory<float> new_gt_rgbd;
+        tcnn::GPUMemory<float> new_rec_rgbd;
+        tcnn::GPUMemory<float> gradients;
+
+        new_gt_rgbd.enlarge(tmp_dim*4);
+        new_rec_rgbd.enlarge(tmp_dim*4);
+        gradients.enlarge(tmp_dim * cur_dim); // L1 x L2 matrix
+        gradients.memset(0);
+
+	    linear_kernel(convolution_gaussian_pyramid, 0, stream,
+            tmp_dim,
+            cur_dim,
+            cur_super_ray_window_size,
+            tmp_super_ray_window_size,
+            cur_ray_stride,
+            tmp_ray_stride,
+            kernel_gpu.data(),
+            l==0 ? existing_ray_mapping_gpu : nullptr,
+            l==0 ? mapping_indices : nullptr,
+            ground_truth_rgbd_tensors.back().data(),
+            reconstructed_rgbd_tensors.back().data(),
+            new_gt_rgbd.data(),
+            new_rec_rgbd.data(),
+            gradients.data()
+	    );
+
+        ground_truth_rgbd_tensors.push_back(new_gt_rgbd);
+        reconstructed_rgbd_tensors.push_back(new_rec_rgbd);
+        gradients_tensors.push_back(gradients);
+        dimensions.push_back(tmp_dim);
+
+        cur_super_ray_window_size = tmp_super_ray_window_size;
+        cur_ray_stride = tmp_ray_stride;
+        cur_dim = tmp_dim;
+
+
+    }
+
+    //TODO: NOTE
+    // eventually remove the ray counters / or keep them but add an actual condition
+    // (ie) when level=0 and we don;t have depth target
+    // (ie) or when sampling super rays with no rays with depth
+
+    tcnn::GPUMemory<float> dL_dB;
+    dL_dB.enlarge(n_super_rays * 4);
 
     //NOTE: compute loss.
-	linear_kernel(compute_loss, 0, stream,
+	linear_kernel(compute_loss_gp, 0, stream,
 		n_super_rays,
 		m_nerf.training.track_loss_type,
 		m_nerf.training.track_depth_loss_type,
 		counters.loss.data(),
 		counters.loss_depth.data(),
-        ray_stride,
-        kernel_window_size,
-		mapping_indices,
-        ground_truth_rgbd,
-        reconstructed_rgbd,
-        reconstructed_depth_var,
-        kernel_gpu.data(),
-        losses_and_gradients,
+        m_tracking_use_depth_var_in_loss,
+        ground_truth_rgbd_tensors.back().data(),
+        reconstructed_rgbd_tensors.back().data(),
+        m_tracking_use_depth_var_in_loss ? reconstructed_depth_var_gpu.data(): nullptr,
+        dL_dB.data(),
 		super_ray_counter,
 		super_ray_counter_depth
 	);
 
+    //NOTE: Backprop thru convs
+    std::vector<tcnn::GPUMemory<float> > partial_derivatives;
+    partial_derivatives.push_back(dL_dB);
+
+    for (size_t l=0; l<gaussian_pyramid_level; ++l) {
+
+        uint32_t cur_dim = dimensions.back();
+        dimensions.pop_back();
+        uint32_t tmp_dim = dimensions.back();
+
+        tcnn::GPUMemory<float> tmp_dL_dB;
+        tmp_dL_dB.enlarge(tmp_dim * 4);
+
+        linear_kernel(backprop_thru_convs, 0, stream,
+            tmp_dim,
+            cur_dim,
+            partial_derivatives.back().data(),
+            gradients_tensors.back().data(),
+            tmp_dL_dB.data()
+        );
+
+        partial_derivatives.push_back(tmp_dL_dB);
+        gradients_tensors.pop_back();
+    }
 
 	CUDA_CHECK_THROW(
        cudaMemcpyAsync(
           &counters.super_rays_counter,
-          std::get<17>(scratch),
+          std::get<14>(scratch),
           sizeof(uint32_t),
           cudaMemcpyDeviceToHost,
           stream
@@ -1345,7 +1556,7 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 	CUDA_CHECK_THROW(
        cudaMemcpyAsync(
           &counters.super_rays_counter_depth,
-          std::get<18>(scratch),
+          std::get<15>(scratch),
           sizeof(uint32_t),
           cudaMemcpyDeviceToHost,
           stream
@@ -1353,9 +1564,8 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
     );
 
     //NOTE: compute loss and gradients.
-	linear_kernel(compute_gradient, 0, stream,
-		counters.rays_per_batch,
-		n_super_rays*ray_stride,
+	linear_kernel(compute_gradient_gp, 0, stream,
+        n_total_rays,
 		m_aabb,
 		LOSS_SCALE,
 		padded_output_width,
@@ -1378,16 +1588,13 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		m_nerf.density_grid_mean.data(),
 		m_nerf.training.depth_supervision_lambda,
 		m_nerf.training.near_distance,
-        ray_stride,
-        kernel_window_size,
         xy_image_pixel_indices,
 		mapping_indices,
-        ground_truth_rgbd,
-        reconstructed_rgbd,
+        ground_truth_rgbd_gpu.data(),
+        reconstructed_rgbd_gpu.data(),
 		ray_counter,
-        kernel_gpu.data(),
-		n_super_rays,
-        losses_and_gradients,
+        existing_ray_mapping_gpu,
+        partial_derivatives.back().data(),
 		super_ray_counter,
 		super_ray_counter_depth
 	);
@@ -1412,7 +1619,7 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 	}
 
 	// Compute camera gradients
-	linear_kernel(compute_camera_gradient, 0, stream,
+	linear_kernel(compute_camera_gradient_gp, 0, stream,
 		counters.rays_per_batch,
 		m_aabb,
 		ray_counter,
@@ -1430,8 +1637,23 @@ void Testbed::track_pose_nerf_slam_step_opti(uint32_t target_batch_size, Testbed
 		m_distortion.resolution,
 		m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
         m_nerf.training.indice_image_for_tracking_pose,
-        xy_image_pixel_indices
+        xy_image_pixel_indices,
+        ray_stride,
+	    super_ray_gradients
 	);
+
+    uint32_t prev_size = m_nerf.training.tracking_gradients_super_rays.size();
+    uint32_t new_size = prev_size + n_super_rays * 6;
+    m_nerf.training.tracking_gradients_super_rays.resize(new_size);
+
+    CUDA_CHECK_THROW(
+       cudaMemcpy(
+          &m_nerf.training.tracking_gradients_super_rays.data()[prev_size],
+          std::get<17>(scratch),
+          n_super_rays * 6 * sizeof(float),
+          cudaMemcpyDeviceToHost
+       )
+    );
 
 	m_rng.advance();
 

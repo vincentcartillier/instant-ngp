@@ -2599,7 +2599,6 @@ void Testbed::train(uint32_t batch_size) {
 
 void Testbed::track_pose(uint32_t batch_size) {
 	if (!m_training_data_available) {
-		m_train = false;
 		return;
 	}
 
@@ -2612,7 +2611,12 @@ void Testbed::track_pose(uint32_t batch_size) {
 			m_training_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count());
 		}};
 
-		track_pose_nerf_slam_opti(batch_size, get_loss_scalar, m_stream.get());
+		switch (m_tracking_mode) {
+            case 0: track_pose_simple_nerf_slam(batch_size, get_loss_scalar, m_stream.get()); break;
+            case 1: track_pose_gaussian_blur_nerf_slam(batch_size, get_loss_scalar, m_stream.get()); break;
+            case 2: track_pose_gaussian_pyramid_nerf_slam(batch_size, get_loss_scalar, m_stream.get()); break;
+			default: throw std::runtime_error{"Invalid tracking mode."};
+        }
 
 		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
 	}
@@ -2622,34 +2626,6 @@ void Testbed::track_pose(uint32_t batch_size) {
 		update_loss_graph();
 	}
 }
-
-
-
-// void Testbed::track_pose_naive(uint32_t batch_size) {
-// 	if (!m_training_data_available) {
-// 		m_train = false;
-// 		return;
-// 	}
-//
-// 	bool get_loss_scalar = m_training_step_track % 16 == 0;
-//
-// 	{
-// 		auto start = std::chrono::steady_clock::now();
-// 		ScopeGuard timing_guard{[&]() {
-// 			m_training_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count());
-// 		}};
-//
-// 		track_pose_naive_nerf_slam(batch_size, get_loss_scalar, m_stream.get());
-//
-// 		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
-// 	}
-//
-// 	if (get_loss_scalar) {
-//         //FIXME: add tracking loss to loss graph
-// 		update_loss_graph();
-// 	}
-// }
-
 
 
 

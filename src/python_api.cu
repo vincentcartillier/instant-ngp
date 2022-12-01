@@ -469,6 +469,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("mapping_loss", &Testbed::m_mapping_loss)
 		.def_readonly("mapping_loss_depth", &Testbed::m_mapping_loss_depth)
 		.def_readwrite("tracking_sigma", &Testbed::m_tracking_sigma_gaussian_kernel)
+		.def_readwrite("tracking_gaussian_pyramid_level", &Testbed::m_tracking_gaussian_pyramid_level)
+		.def_readwrite("tracking_mode", &Testbed::m_tracking_mode)
 		.def_readonly("num_rays_taken_in_tracking_step", &Testbed::m_track_pose_nerf_num_rays_in_tracking_step)
 		.def_readonly("num_super_rays_targeted_in_tracking_step", &Testbed::m_track_pose_nerf_num_super_rays_targeted_in_tracking_step)
 		.def_readwrite("tracking_kernel_window_size", &Testbed::m_tracking_kernel_window_size)
@@ -704,6 +706,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("sampled_pixels_for_tracking", &Testbed::Nerf::Training::sampled_pixels_for_tracking)
 		.def_readonly("sampled_ray_indices_for_tracking_gradient", &Testbed::Nerf::Training::sampled_ray_indices_for_tracking_gradient)
 		.def_readwrite("rays_per_tracking_batch", &Testbed::Nerf::Training::rays_per_tracking_batch)
+		.def_readonly("tracking_gradients_super_rays", &Testbed::Nerf::Training::tracking_gradients_super_rays)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

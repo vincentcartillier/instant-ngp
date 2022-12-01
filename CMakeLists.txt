@@ -229,7 +229,9 @@ list(APPEND NGP_SOURCES
 	src/testbed.cu
 	src/testbed_image.cu
 	src/testbed_nerf.cu
-	src/testbed_nerf_tracking.cu
+	src/testbed_nerf_tracking_gaussian_blur.cu
+	src/testbed_nerf_tracking_gaussian_pyramid.cu
+	src/testbed_nerf_tracking_simple.cu
 	src/testbed_sdf.cu
 	src/testbed_volume.cu
 	src/thread_pool.cpp
