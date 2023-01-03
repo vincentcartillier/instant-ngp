@@ -462,6 +462,12 @@ PYBIND11_MODULE(pyngp, m) {
 
 	// Interesting members.
 	testbed
+		.def_readwrite("use_depth_var_in_tracking", &Testbed::m_tracking_use_depth_var_in_loss)
+		.def_readwrite("use_color_var_in_tracking", &Testbed::m_tracking_use_color_var_in_loss)
+		.def_readonly("tracking_rec_color_var", &Testbed::m_tracking_reconstructed_color_var)
+		.def_readonly("tracking_rec_depth_var", &Testbed::m_tracking_reconstructed_depth_var)
+		.def_readonly("tracking_rec_color_var_at_level", &Testbed::m_tracking_reconstructed_color_var_at_level)
+		.def_readonly("tracking_rec_depth_var_at_level", &Testbed::m_tracking_reconstructed_depth_var_at_level)
 		.def_readonly("tracking_pos_gradient_norm", &Testbed::m_tracking_pos_gradient_norm)
 		.def_readonly("tracking_rot_gradient_norm", &Testbed::m_tracking_rot_gradient_norm)
 		.def_readonly("tracking_loss", &Testbed::m_tracking_loss)
@@ -571,6 +577,8 @@ PYBIND11_MODULE(pyngp, m) {
 	py::class_<Testbed::NerfCounters> nerf_counter(testbed, "NerfCounters");
     nerf_counter
         .def_readwrite("rays_per_batch", &Testbed::NerfCounters::rays_per_batch)
+        .def_readonly("loss", &Testbed::NerfCounters::loss_cpu)
+        .def_readonly("loss_depth", &Testbed::NerfCounters::loss_depth_cpu)
         ;
 
 	py::class_<Testbed::Nerf> nerf(testbed, "Nerf");
@@ -704,6 +712,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("ba_extrinsic_learning_rate_pos", &Testbed::Nerf::Training::ba_extrinsic_learning_rate_pos)
 		.def_readwrite("ba_extrinsic_learning_rate_rot", &Testbed::Nerf::Training::ba_extrinsic_learning_rate_rot)
 		.def_readonly("sampled_pixels_for_tracking", &Testbed::Nerf::Training::sampled_pixels_for_tracking)
+		.def_readonly("sampled_pixels_for_tracking_at_level", &Testbed::Nerf::Training::sampled_pixels_for_tracking_at_level)
 		.def_readonly("sampled_ray_indices_for_tracking_gradient", &Testbed::Nerf::Training::sampled_ray_indices_for_tracking_gradient)
 		.def_readwrite("rays_per_tracking_batch", &Testbed::Nerf::Training::rays_per_tracking_batch)
 		.def_readonly("tracking_gradients_super_rays", &Testbed::Nerf::Training::tracking_gradients_super_rays)

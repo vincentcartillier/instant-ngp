@@ -3146,7 +3146,8 @@ std::vector<float> Testbed::NerfCounters::update_after_training(uint32_t target_
 	float loss_scalar = 0.0;
 	if (get_loss_scalar) {
         if (mode_tracking){
-		    loss_scalar = reduce_sum(loss.data(), rays_per_batch, stream) / (float)super_rays_counter;
+		    // loss_scalar = reduce_sum(loss.data(), rays_per_batch, stream) / (float)super_rays_counter;
+		    loss_scalar = std::accumulate(loss_cpu.begin(), loss_cpu.end(), 0.0f) / (float)super_rays_counter;
         } else {
 		    loss_scalar = reduce_sum(loss.data(), rays_per_batch, stream) * (float)measured_batch_size / (float)target_batch_size;
         }
@@ -3154,7 +3155,8 @@ std::vector<float> Testbed::NerfCounters::update_after_training(uint32_t target_
 	float depth_loss_scalar = 0.0;
 	if (get_depth_loss_scalar) {
         if (mode_tracking){
-		    depth_loss_scalar = reduce_sum(loss_depth.data(), rays_per_batch, stream) / (float)super_rays_counter_depth;
+		    // depth_loss_scalar = reduce_sum(loss_depth.data(), rays_per_batch, stream) / (float)super_rays_counter_depth;
+		    depth_loss_scalar = std::accumulate(loss_depth_cpu.begin(), loss_depth_cpu.end(), 0.0f) / (float)super_rays_counter_depth;
         } else {
 		    depth_loss_scalar = reduce_sum(loss_depth.data(), rays_per_batch, stream) * (float)measured_batch_size / (float)target_batch_size;
         }

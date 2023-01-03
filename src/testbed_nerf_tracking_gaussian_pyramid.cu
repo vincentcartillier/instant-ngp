@@ -209,9 +209,11 @@ __global__ void compute_depth_variance_gp(
 	const Ray* __restrict__ rays_in_unnormalized,
 	uint32_t* __restrict__ numsteps_in,
 	PitchedPtr<const NerfCoordinate> coords_in,
+	ENerfActivation rgb_activation,
 	ENerfActivation density_activation,
 	const float* __restrict__ reconstructed_rgbd,
-	float* __restrict__ reconstructed_depth_var
+	float* __restrict__ reconstructed_depth_var,
+	float* __restrict__ reconstructed_color_var
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *ray_counter) { return; }
@@ -224,12 +226,14 @@ __global__ void compute_depth_variance_gp(
 	network_output += base * padded_output_width;
 
     const float rec_depth = reconstructed_rgbd[i*4+3];
+    const float rec_color = (reconstructed_rgbd[i*4+0] + reconstructed_rgbd[i*4+1] + reconstructed_rgbd[i*4+2]) / 3.0;
 
 	float T = 1.f;
 
 	float EPSILON = 1e-4f;
 
     float depth_var = 0.f;
+    float color_var = 0.f;
 
     Eigen::Vector3f ray_o = rays_in_unnormalized[i].o;
 
@@ -239,18 +243,23 @@ __global__ void compute_depth_variance_gp(
 		}
 
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
+		const Array3f rgb = network_to_rgb(local_network_output, rgb_activation);
 		float density = network_to_density(float(local_network_output[3]), density_activation);
 
         const Vector3f pos = unwarp_position(coords_in.ptr->pos.p, aabb);
 		const float dt = unwarp_dt(coords_in.ptr->dt);
 		float cur_depth = (pos - ray_o).norm();
+        float cur_color = (rgb.x()+rgb.y()+rgb.z()) / 3.0;
 
         float tmp = (cur_depth - rec_depth) * (cur_depth - rec_depth);
+        float tmp_color = (cur_color - rec_color) * (cur_color - rec_color);
+
 
 		const float alpha = 1.f - __expf(-density * dt);
 		const float weight = alpha * T;
 
         depth_var += weight * tmp;
+        color_var += weight * tmp_color;
 		T *= (1.f - alpha);
 
 		network_output += padded_output_width;
@@ -258,6 +267,7 @@ __global__ void compute_depth_variance_gp(
 	}
 
     reconstructed_depth_var[i] = depth_var;
+    reconstructed_color_var[i] = color_var;
 }
 
 
@@ -424,6 +434,10 @@ __global__ void convolution_gaussian_pyramid(
     const int32_t* __restrict__ mapping_indices,
     float* __restrict__ gt_rgbd_input,
     float* __restrict__ rec_rgbd_input,
+    float* __restrict__ rec_depth_var_input,
+    float* __restrict__ rec_color_var_input,
+    float* __restrict__ rec_depth_var_output,
+    float* __restrict__ rec_color_var_output,
     float* __restrict__ gt_rgbd_output,
     float* __restrict__ rec_rgbd_output,
     float* __restrict__ gradients
@@ -466,6 +480,9 @@ __global__ void convolution_gaussian_pyramid(
     float norm=0.f;
     float norm_depth=0.f;
 
+    float rec_depth_var = 0.f;
+    float rec_color_var = 0.f;
+
     for (uint32_t n=(u_prime-2); n<(u_prime+2+1); ++n) {
         for (uint32_t m=(v_prime-2); m<(v_prime+2+1); ++m) {
             index = a + n * window_size_input + m;
@@ -480,6 +497,8 @@ __global__ void convolution_gaussian_pyramid(
                 int32_t ray_idx = mapping_indices[index_map];
                 if (ray_idx < 0) {
                     continue;
+                } else {
+                    index_map = ray_idx;
                 }
             }
 
@@ -494,6 +513,12 @@ __global__ void convolution_gaussian_pyramid(
             rec_rgb.z() += kernel[cpt] * rec_rgbd_input[index_map*4+2];
             rec_depth   += kernel[cpt] * rec_rgbd_input[index_map*4+3];
 
+            if (rec_depth_var_input) {
+                rec_depth_var += kernel[cpt] * rec_depth_var_input[index_map];
+            }
+            if (rec_color_var_input) {
+                rec_color_var += kernel[cpt] * rec_color_var_input[index_map];
+            }
 
             float tmp_gt_depth = gt_rgbd_input[index_map*4+3];
             if (tmp_gt_depth > 0) {
@@ -512,6 +537,8 @@ __global__ void convolution_gaussian_pyramid(
         gt_rgb /= norm;
         rec_rgb /= norm;
         rec_depth /= norm;
+        rec_depth_var /= norm;
+        rec_color_var /= norm;
     }
 
     if (norm_depth>0) {
@@ -528,6 +555,15 @@ __global__ void convolution_gaussian_pyramid(
     rec_rgbd_output[i*4+2] = rec_rgb.z();
     rec_rgbd_output[i*4+3] = rec_depth;
 
+    if (rec_depth_var_output) {
+        rec_depth_var_output[i] = rec_depth_var;
+    }
+
+    if (rec_color_var_output) {
+        rec_color_var_output[i] = rec_color_var;
+    }
+
+
 }
 
 __global__ void compute_loss_gp(
@@ -537,16 +573,46 @@ __global__ void compute_loss_gp(
 	float* __restrict__ loss_output,
 	float* __restrict__ loss_depth_output,
     const bool use_depth_var_in_loss,
+	const bool use_color_var_in_loss,
+    const uint32_t* __restrict__ existing_ray_mapping_gpu,
+    const int32_t* __restrict__ mapping_indices,
     const float* __restrict__ ground_truth_rgbd,
 	const float* __restrict__ reconstructed_rgbd,
 	const float* __restrict__ reconstructed_depth_var,
+	const float* __restrict__ reconstructed_color_var,
 	float* __restrict__ losses_and_gradients,
 	uint32_t* __restrict__ super_ray_counter,
 	uint32_t* __restrict__ super_ray_counter_depth
 ) {
 
-	const uint32_t super_i = threadIdx.x + blockIdx.x * blockDim.x;
-	if (super_i >= n_rays) { return; }
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_rays) { return; }
+
+    uint32_t super_i;
+    if (existing_ray_mapping_gpu) {
+        super_i = existing_ray_mapping_gpu[i];
+    } else {
+        super_i = i;
+    }
+    if (mapping_indices) {
+        int32_t ray_idx = mapping_indices[super_i];
+        if (ray_idx < 0) {
+            // No output for the sampled ray
+            losses_and_gradients[i*4+0] = 0.f;
+            losses_and_gradients[i*4+1] = 0.f;
+            losses_and_gradients[i*4+2] = 0.f;
+            losses_and_gradients[i*4+3] = 0.f;
+	        if (loss_output) {
+	        	loss_output[i] = 0.f;
+	        }
+	        if (loss_depth_output) {
+                loss_depth_output[i] = 0.f;
+	        }
+            return;
+        } else {
+            super_i = ray_idx;
+        }
+    }
 
     uint32_t num_super_rays_in_loss = atomicAdd(super_ray_counter, 1);	 // first entry in the array is a counter
 
@@ -564,11 +630,6 @@ __global__ void compute_loss_gp(
     };
     float avg_depth_ray_target = ground_truth_rgbd[super_i*4+3];
 
-    if (use_depth_var_in_loss) {
-        //TODO: include depth_var in loss?
-	    // float avg_depth_ray_var = reconstructed_depth_var[super_i];
-    }
-
     LossAndGradient lg = loss_and_gradient(avg_rgb_ray_target, avg_rgb_ray, loss_type);
     LossAndGradient lg_depth;
 
@@ -585,17 +646,46 @@ __global__ void compute_loss_gp(
         lg_depth.gradient.x() = 0.f;
     }
 
-    losses_and_gradients[super_i*4+0] = lg.gradient.x();
-    losses_and_gradients[super_i*4+1] = lg.gradient.y();
-    losses_and_gradients[super_i*4+2] = lg.gradient.z();
-    losses_and_gradients[super_i*4+3] = lg_depth.gradient.x();
+    if (use_depth_var_in_loss) {
+	    float rec_depth_var = reconstructed_depth_var[super_i];
+
+        if (rec_depth_var < 1e-6){
+            rec_depth_var = 1e-6;
+        }
+        
+		float rec_depth_std = sqrt(rec_depth_var);
+        
+		lg_depth.loss.x() /= rec_depth_std;
+        lg_depth.gradient.x() /= rec_depth_std;
+
+    }
+	
+	if (use_color_var_in_loss) {
+	    float rec_color_var = reconstructed_color_var[super_i];
+        
+		if (rec_color_var < 1e-6){
+            rec_color_var = 1e-6;
+        }
+        
+		float rec_color_std = sqrt(rec_color_var);
+
+        lg.loss /= rec_color_std;
+        lg.gradient /= rec_color_std;
+
+	}
+
+    losses_and_gradients[i*4+0] = lg.gradient.x();
+    losses_and_gradients[i*4+1] = lg.gradient.y();
+    losses_and_gradients[i*4+2] = lg.gradient.z();
+    losses_and_gradients[i*4+3] = lg_depth.gradient.x();
 
     float mean_loss = lg.loss.mean();
+
 	if (loss_output) {
-		loss_output[super_i] = mean_loss;
+		loss_output[i] = mean_loss;
 	}
 	if (loss_depth_output) {
-        loss_depth_output[super_i] = lg_depth.loss.x();
+        loss_depth_output[i] = lg_depth.loss.x();
 	}
 }
 
@@ -943,9 +1033,6 @@ void Testbed::sample_pixels_for_tracking_with_gaussian_pyramid(
     const Vector2i& resolution_at_level,
     const uint32_t& level
 ) {
-    //TODO: try to preset vector dimensions (then use cpt)
-    // and see if it's faster
-
     // get the at level sampling margins
     int margin_r = (int) ceil(((float) (sample_away_from_border_margin_h + (uint32_t) rf[1])) / pow(2.0, (float) level));
     int margin_c = (int) ceil(((float) (sample_away_from_border_margin_w + (uint32_t) rf[3])) / pow(2.0, (float) level));
@@ -1200,6 +1287,7 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
     );
 
     m_nerf.training.sampled_pixels_for_tracking=xy_image_pixel_indices_int_cpu;
+    m_nerf.training.sampled_pixels_for_tracking_at_level=xy_image_super_pixel_at_level_indices_int_cpu;
 
 	GPUMemoryArena::Allocation alloc;
 	auto scratch = allocate_workspace_and_distribute<
@@ -1417,8 +1505,10 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 
     //NOTE: get Depth reconstruction variance (ie confidence)
     tcnn::GPUMemory<float> reconstructed_depth_var_gpu;
+    tcnn::GPUMemory<float> reconstructed_color_var_gpu;
     if (m_tracking_use_depth_var_in_loss) {
         reconstructed_depth_var_gpu.enlarge(n_total_rays_for_gradient);
+        reconstructed_color_var_gpu.enlarge(n_total_rays_for_gradient);
 	    linear_kernel(compute_depth_variance_gp, 0, stream,
             n_total_rays_for_gradient,
 	    	m_aabb,
@@ -1428,16 +1518,24 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 	    	rays_unnormalized,
 	    	numsteps,
 	    	PitchedPtr<const NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
+		    m_nerf.rgb_activation,
 	    	m_nerf.density_activation,
             reconstructed_rgbd_gpu.data(),
-            reconstructed_depth_var_gpu.data()
+            reconstructed_depth_var_gpu.data(),
+            reconstructed_color_var_gpu.data()
 	    );
+        m_tracking_reconstructed_depth_var.resize(n_total_rays_for_gradient);
+        reconstructed_depth_var_gpu.copy_to_host(m_tracking_reconstructed_depth_var.data(), n_total_rays_for_gradient);
+        m_tracking_reconstructed_color_var.resize(n_total_rays_for_gradient);
+        reconstructed_color_var_gpu.copy_to_host(m_tracking_reconstructed_color_var.data(), n_total_rays_for_gradient);
     }
 
 
     //NOTE: compute Gaussian pyramids (ie convs)
     std::vector<tcnn::GPUMemory<float> > ground_truth_rgbd_tensors;
     std::vector<tcnn::GPUMemory<float> > reconstructed_rgbd_tensors;
+    std::vector<tcnn::GPUMemory<float> > reconstructed_depth_var_tensors;
+    std::vector<tcnn::GPUMemory<float> > reconstructed_color_var_tensors;
     std::vector<tcnn::GPUMemory<float> > gradients_tensors;
     std::vector<uint32_t> dimensions;
 
@@ -1448,8 +1546,13 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
     ground_truth_rgbd_tensors.push_back(ground_truth_rgbd_gpu);
     reconstructed_rgbd_tensors.push_back(reconstructed_rgbd_gpu);
     dimensions.push_back(cur_dim);
+    if (m_tracking_use_depth_var_in_loss) {
+        reconstructed_depth_var_tensors.push_back(reconstructed_depth_var_gpu);
+        reconstructed_color_var_tensors.push_back(reconstructed_color_var_gpu);
+    }
 
     for (size_t l=0; l<gaussian_pyramid_level; ++l) {
+
         std::vector<int> tmp_receptive_field;
         get_receptive_field_of_gaussian_pyramid_at_level(gaussian_pyramid_level-l-1, tmp_receptive_field);
         uint32_t tmp_super_ray_window_size = tmp_receptive_field[1] * 2 + 1;
@@ -1465,6 +1568,13 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
         gradients.enlarge(tmp_dim * cur_dim); // L1 x L2 matrix
         gradients.memset(0);
 
+        tcnn::GPUMemory<float> new_rec_depth_var;
+        tcnn::GPUMemory<float> new_rec_color_var;
+        if (m_tracking_use_depth_var_in_loss) {
+            new_rec_depth_var.enlarge(tmp_dim);
+            new_rec_color_var.enlarge(tmp_dim);
+        }
+
 	    linear_kernel(convolution_gaussian_pyramid, 0, stream,
             tmp_dim,
             cur_dim,
@@ -1477,6 +1587,10 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
             l==0 ? mapping_indices : nullptr,
             ground_truth_rgbd_tensors.back().data(),
             reconstructed_rgbd_tensors.back().data(),
+            m_tracking_use_depth_var_in_loss ? reconstructed_depth_var_tensors.back().data() : nullptr,
+            m_tracking_use_depth_var_in_loss ? reconstructed_color_var_tensors.back().data() : nullptr,
+            m_tracking_use_depth_var_in_loss ? new_rec_depth_var.data() : nullptr,
+            m_tracking_use_depth_var_in_loss ? new_rec_color_var.data() : nullptr,
             new_gt_rgbd.data(),
             new_rec_rgbd.data(),
             gradients.data()
@@ -1487,17 +1601,31 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
         gradients_tensors.push_back(gradients);
         dimensions.push_back(tmp_dim);
 
+        if (m_tracking_use_depth_var_in_loss) {
+            reconstructed_depth_var_tensors.push_back(new_rec_depth_var);
+            reconstructed_color_var_tensors.push_back(new_rec_color_var);
+        }
+
         cur_super_ray_window_size = tmp_super_ray_window_size;
         cur_ray_stride = tmp_ray_stride;
         cur_dim = tmp_dim;
 
-
     }
 
-    //TODO: NOTE
-    // eventually remove the ray counters / or keep them but add an actual condition
-    // (ie) when level=0 and we don;t have depth target
-    // (ie) or when sampling super rays with no rays with depth
+    if (m_tracking_use_depth_var_in_loss) {
+        if (gaussian_pyramid_level>0) {
+            m_tracking_reconstructed_depth_var_at_level.resize(n_super_rays);
+            m_tracking_reconstructed_color_var_at_level.resize(n_super_rays);
+            reconstructed_depth_var_tensors.back().copy_to_host(m_tracking_reconstructed_depth_var_at_level.data(), n_super_rays);
+            reconstructed_color_var_tensors.back().copy_to_host(m_tracking_reconstructed_color_var_at_level.data(), n_super_rays);
+        } else {
+            m_tracking_reconstructed_depth_var_at_level.resize(n_total_rays_for_gradient);
+            m_tracking_reconstructed_color_var_at_level.resize(n_total_rays_for_gradient);
+            reconstructed_depth_var_tensors.back().copy_to_host(m_tracking_reconstructed_depth_var_at_level.data(), n_total_rays_for_gradient);
+            reconstructed_color_var_tensors.back().copy_to_host(m_tracking_reconstructed_color_var_at_level.data(), n_total_rays_for_gradient);
+        }
+    }
+
 
     tcnn::GPUMemory<float> dL_dB;
     dL_dB.enlarge(n_super_rays * 4);
@@ -1510,13 +1638,23 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 		counters.loss.data(),
 		counters.loss_depth.data(),
         m_tracking_use_depth_var_in_loss,
+		m_tracking_use_color_var_in_loss,
+        gaussian_pyramid_level==0 ? existing_ray_mapping_gpu : nullptr,
+        gaussian_pyramid_level==0 ? mapping_indices : nullptr,
         ground_truth_rgbd_tensors.back().data(),
         reconstructed_rgbd_tensors.back().data(),
-        m_tracking_use_depth_var_in_loss ? reconstructed_depth_var_gpu.data(): nullptr,
+        m_tracking_use_depth_var_in_loss ? reconstructed_depth_var_tensors.back().data(): nullptr,
+        m_tracking_use_depth_var_in_loss ? reconstructed_color_var_tensors.back().data(): nullptr,
         dL_dB.data(),
 		super_ray_counter,
 		super_ray_counter_depth
 	);
+
+    // NOTE: store Losses on host
+    counters.loss_cpu.resize(n_super_rays);
+    counters.loss_depth_cpu.resize(n_super_rays);
+    counters.loss.copy_to_host(counters.loss_cpu.data(), n_super_rays);
+    counters.loss_depth.copy_to_host(counters.loss_depth_cpu.data(), n_super_rays);
 
     //NOTE: Backprop thru convs
     std::vector<tcnn::GPUMemory<float> > partial_derivatives;

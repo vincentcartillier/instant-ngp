@@ -335,6 +335,9 @@ public:
 		tcnn::GPUMemory<float> loss;
 		tcnn::GPUMemory<float> loss_depth;
 
+        std::vector<float> loss_cpu;
+		std::vector<float> loss_depth_cpu;
+
 		uint32_t rays_per_batch = 1<<12;
 		uint32_t super_rays_counter = 0;
 		uint32_t super_rays_counter_depth = 0;
@@ -397,6 +400,10 @@ public:
      * 2: gaussian-pyramid
      */
     uint32_t m_tracking_mode=0;
+    std::vector<float> m_tracking_reconstructed_depth_var;
+    std::vector<float> m_tracking_reconstructed_color_var;
+    std::vector<float> m_tracking_reconstructed_depth_var_at_level;
+    std::vector<float> m_tracking_reconstructed_color_var_at_level;
     // =======================================
     // =======================================
 
@@ -534,6 +541,7 @@ public:
     float m_tracking_loss=0.f;
     float m_tracking_loss_depth=0.f;
     bool m_tracking_use_depth_var_in_loss=false;
+	bool m_tracking_use_color_var_in_loss=false;
 
     float m_tracking_pos_gradient_norm=0.f;
     float m_tracking_rot_gradient_norm=0.f;
@@ -639,6 +647,7 @@ public:
             tcnn::GPUMemory<uint32_t> indice_image_for_tracking_pose_gpu;
 
             std::vector<uint32_t> sampled_pixels_for_tracking;
+            std::vector<uint32_t> sampled_pixels_for_tracking_at_level; // at Gaussian Pyramid Resolution level
             uint32_t rays_per_tracking_batch=4096;
             std::vector<uint32_t> sampled_ray_indices_for_tracking_gradient;
 

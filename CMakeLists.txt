@@ -305,6 +305,11 @@ target_link_libraries(testbed PRIVATE ngp)
 add_executable(debug src/debug.cu)
 target_link_libraries(debug PRIVATE ngp)
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(ngp PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+    target_compile_options(debug PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+endif()
+
 # Copy DLSS shared libraries
 if (NGP_VULKAN)
 	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
