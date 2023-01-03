@@ -185,7 +185,8 @@ public:
 			float glow_y_cutoff,
 			int glow_mode,
 			const float* extra_dims_gpu,
-			cudaStream_t stream
+			cudaStream_t stream,
+			const bool use_view_dir
 		);
 
 		void enlarge(size_t n_elements, uint32_t padded_output_width, uint32_t n_extra_dims, cudaStream_t stream);
@@ -628,6 +629,8 @@ public:
 		NerfTracer tracer;
 
 		struct Training {
+			bool use_view_dir_in_nerf = true;
+
 			NerfDataset dataset;
 			int n_images_for_training = 0; // how many images to train from, as a high watermark compared to the dataset size
 			int n_images_for_training_prev = 0; // how many images we saw last time we updated the density grid

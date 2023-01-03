@@ -716,6 +716,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("sampled_ray_indices_for_tracking_gradient", &Testbed::Nerf::Training::sampled_ray_indices_for_tracking_gradient)
 		.def_readwrite("rays_per_tracking_batch", &Testbed::Nerf::Training::rays_per_tracking_batch)
 		.def_readonly("tracking_gradients_super_rays", &Testbed::Nerf::Training::tracking_gradients_super_rays)
+		.def_readwrite("use_view_dir_in_nerf", &Testbed::Nerf::Training::use_view_dir_in_nerf)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

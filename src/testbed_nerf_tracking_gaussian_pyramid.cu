@@ -74,7 +74,8 @@ __global__ void generate_training_samples_for_tracking_gp(
 	const uint32_t indice_image_for_tracking_pose,
 	int32_t* __restrict__ mapping_indices,
     const uint32_t* __restrict__ existing_ray_mapping_gpu,
-    const float* __restrict__ xy_image_pixel_indices
+    const float* __restrict__ xy_image_pixel_indices,
+	const bool use_view_dir
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -182,7 +183,12 @@ __global__ void generate_training_samples_for_tracking_gp(
 	numsteps_out[ray_idx*2+0] = numsteps;
 	numsteps_out[ray_idx*2+1] = base;
 
-	Vector3f warped_dir = warp_direction(ray_d_normalized);
+	Vector3f warped_dir;
+	if (use_view_dir) {
+		warped_dir = warp_direction(ray_d_normalized);
+	} else {
+		warped_dir = Vector3f::Zero();
+	}
 	t=startt;
 	j=0;
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
@@ -1432,7 +1438,8 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
         m_nerf.training.indice_image_for_tracking_pose,
 		mapping_indices,
         existing_ray_mapping_gpu,
-        xy_image_pixel_indices
+        xy_image_pixel_indices,
+		m_nerf.training.use_view_dir_in_nerf
 	);
 
     //DEBUG: check the sampled pixels

@@ -299,7 +299,8 @@ __global__ void generate_next_nerf_network_inputs(
 	const uint8_t* __restrict__ density_grid,
 	uint32_t min_mip,
 	float cone_angle_constant,
-	const float* extra_dims
+	const float* extra_dims,
+	const bool use_view_dir
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -317,6 +318,13 @@ __global__ void generate_next_nerf_network_inputs(
 	float cone_angle = calc_cone_angle(dir.dot(camera_fwd), focal_length, cone_angle_constant);
 
 	float t = payload.t;
+	
+	Vector3f warp_dir;
+	if (use_view_dir) {
+		warp_dir = warp_direction(dir);
+	} else {
+		warp_dir = Vector3f::Zero();
+	}
 
 	for (uint32_t j = 0; j < n_steps; ++j) {
 		Vector3f pos;
@@ -339,7 +347,7 @@ __global__ void generate_next_nerf_network_inputs(
 			t = advance_to_next_voxel(t, cone_angle, pos, dir, idir, res);
 		}
 
-		network_input(i + j * n_elements)->set_with_optional_extra_dims(warp_position(pos, train_aabb), warp_direction(dir), warp_dt(dt), extra_dims, network_input.stride_in_bytes); // XXXCONE
+		network_input(i + j * n_elements)->set_with_optional_extra_dims(warp_position(pos, train_aabb), warp_dir, warp_dt(dt), extra_dims, network_input.stride_in_bytes); // XXXCONE
 		t += dt;
 	}
 
@@ -901,7 +909,8 @@ __global__ void generate_training_samples_nerf_slam(
 	const float* __restrict__ extra_dims_gpu,
 	uint32_t n_extra_dims,
 	const uint32_t n_training_images_slam,
-    const uint32_t* __restrict__ idx_images_for_training_slam
+    const uint32_t* __restrict__ idx_images_for_training_slam,
+	const bool use_view_dir
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -1030,7 +1039,12 @@ __global__ void generate_training_samples_nerf_slam(
 	numsteps_out[ray_idx*2+0] = numsteps;
 	numsteps_out[ray_idx*2+1] = base;
 
-	Vector3f warped_dir = warp_direction(ray_d_normalized);
+	Vector3f warped_dir;
+	if (use_view_dir) {
+		warped_dir = warp_direction(ray_d_normalized);
+	} else {
+		warped_dir = Vector3f::Zero();
+	}
 	t=startt;
 	j=0;
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
@@ -2422,7 +2436,8 @@ uint32_t Testbed::NerfTracer::trace(
 	float glow_y_cutoff,
 	int glow_mode,
 	const float* extra_dims_gpu,
-	cudaStream_t stream
+	cudaStream_t stream,
+	const bool use_view_dir
 ) {
 	if (m_n_rays_initialized == 0) {
 		return 0;
@@ -2475,7 +2490,8 @@ uint32_t Testbed::NerfTracer::trace(
 			grid,
 			(show_accel>=0) ? show_accel : 0,
 			cone_angle_constant,
-			extra_dims_gpu
+			extra_dims_gpu,
+			use_view_dir
 		);
 		uint32_t n_elements = next_multiple(n_alive * n_steps_between_compaction, tcnn::batch_size_granularity);
 		GPUMatrix<float> positions_matrix((float*)m_network_input, (sizeof(NerfCoordinate) + extra_stride) / sizeof(float), n_elements);
@@ -2671,7 +2687,8 @@ void Testbed::render_nerf(CudaRenderBuffer& render_buffer, const Vector2i& max_r
 			m_nerf.glow_y_cutoff,
 			m_nerf.glow_mode,
 			extra_dims_gpu,
-			stream
+			stream,
+			m_nerf.training.use_view_dir_in_nerf
 		);
 	}
 	RaysNerfSoa& rays_hit = m_render_mode == ERenderMode::Slice ? m_nerf.tracer.rays_init() : m_nerf.tracer.rays_hit();
@@ -4281,29 +4298,6 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
        )
     );
 
-    //TODO: move that outside the training loop
-    // -- -- m_nerf.training.images_tracking_loss_gpu.enlarge(m_nerf.training.n_images_for_training_slam);
-	// -- -- CUDA_CHECK_THROW(
-    // -- --    cudaMemcpy(
-    // -- --       m_nerf.training.images_tracking_loss_gpu.data(),
-    // -- --       m_nerf.training.images_tracking_loss.data(),
-    // -- --       m_nerf.training.n_images_for_training_slam * sizeof(float),
-    // -- --       cudaMemcpyHostToDevice
-    // -- --    )
-    // -- -- );
-
-    //TODO: move that outside the training loop
-    // m_nerf.training.images_tracking_std_gpu.enlarge(m_nerf.training.n_images_for_training_slam);
-	// CUDA_CHECK_THROW(
-    //    cudaMemcpy(
-    //       m_nerf.training.images_tracking_std_gpu.data(),
-    //       m_nerf.training.images_tracking_std.data(),
-    //       m_nerf.training.n_images_for_training_slam * sizeof(float),
-    //       cudaMemcpyHostToDevice
-    //    )
-    // );
-
-
     //TODO: FIXME:
     // if using sampling image given im cdf we need to modif the cdf vector to only have the SLAM image idx.
 
@@ -4337,7 +4331,8 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		m_nerf.training.extra_dims_gpu.data(),
 		m_nerf_network->n_extra_dims(),
 		m_nerf.training.n_images_for_training_slam,
-		m_nerf.training.idx_images_for_training_slam_gpu.data()
+		m_nerf.training.idx_images_for_training_slam_gpu.data(),
+		m_nerf.training.use_view_dir_in_nerf
 	);
 
 	auto hg_enc = dynamic_cast<GridEncoding<network_precision_t>*>(m_encoding.get());
