@@ -689,6 +689,19 @@ public:
 			std::vector<RotationAdamOptimizer> cam_rot_offset;
 			AdamOptimizer<Eigen::Vector2f> cam_focal_length_offset = AdamOptimizer<Eigen::Vector2f>(0.f);
 
+			// Image confidence scores (see Remove objs from NerFs paper)
+			std::vector<AdamOptimizer<Eigen::ArrayXf>> image_confidence_scores;
+			std::vector<float> image_confidence_values;
+			tcnn::GPUMemory<float> image_confidence_values_gpu;
+			std::vector<float> image_confidence_gradient;
+			tcnn::GPUMemory<float> image_confidence_gradient_gpu;
+			std::vector<uint32_t> image_confidence_gradient_ray_count;
+			tcnn::GPUMemory<uint32_t> image_confidence_gradient_ray_count_gpu;
+			uint32_t n_steps_between_confidence_scores_updates = 16;
+			uint32_t n_steps_since_confidence_scores_update = 0;
+			bool train_with_image_confidence_scores = false; 
+			float image_confidence_scores_reg = 5e-3f;
+
 			tcnn::GPUMemory<float> extra_dims_gpu; // if the model demands a latent code per training image, we put them in here.
 			tcnn::GPUMemory<float> extra_dims_gradient_gpu;
 			std::vector<AdamOptimizer<Eigen::ArrayXf>> extra_dims_opt;
@@ -794,6 +807,9 @@ public:
 
 		float glow_y_cutoff = 0.f;
 		int glow_mode = 0;
+
+		uint32_t finest_resolution = 2048;
+
 	} m_nerf;
 
 	struct Sdf {

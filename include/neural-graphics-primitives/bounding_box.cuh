@@ -245,6 +245,14 @@ struct BoundingBox {
 		v[7] = {max.x(), max.y(), max.z()};
 	}
 
+	Eigen::Vector3f get_min() const {
+		return min;
+	}
+	
+	Eigen::Vector3f get_max() const {
+		return max;
+	}
+
 	Eigen::Vector3f min = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity());
 	Eigen::Vector3f max = Eigen::Vector3f::Constant(-std::numeric_limits<float>::infinity());
 };

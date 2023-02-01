@@ -2307,7 +2307,8 @@ void Testbed::reset_network(bool clear_density_grid) {
 			encoding_config["base_resolution"] = m_base_grid_resolution;
 		}
 
-		float desired_resolution = 2048.0f; // Desired resolution of the finest hashgrid level over the unit cube
+		// float desired_resolution = 2048.0f; // Desired resolution of the finest hashgrid level over the unit cube
+		float desired_resolution = (float) m_nerf.finest_resolution; // Desired resolution of the finest hashgrid level over the unit cube
 		if (m_testbed_mode == ETestbedMode::Image) {
 			desired_resolution = m_image.resolution.maxCoeff() / 2.0f;
 		} else if (m_testbed_mode == ETestbedMode::Volume) {
@@ -2323,6 +2324,10 @@ void Testbed::reset_network(bool clear_density_grid) {
         } else {
 		    m_per_level_scale = encoding_config.value("per_level_scale", 0.0f);
         }
+		
+		tlog::info()
+			<< " desired_resolution: " << desired_resolution
+			<< " aabb_scale: " << m_nerf.training.dataset.aabb_scale;
 
 		if (m_per_level_scale <= 0.0f && m_num_levels > 1) {
 			m_per_level_scale = std::exp(std::log(desired_resolution * (float)m_nerf.training.dataset.aabb_scale / (float)m_base_grid_resolution) / (m_num_levels-1));

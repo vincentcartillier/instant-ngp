@@ -1163,7 +1163,11 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	float depth_supervision_lambda,
 	float near_distance,
 	const uint32_t n_training_images_slam,
-    const uint32_t* __restrict__ idx_images_for_training_slam
+    const uint32_t* __restrict__ idx_images_for_training_slam,
+	const bool train_with_image_confidence_scores,
+	const float* __restrict__ image_confidence_values,
+	float* image_confidence_gradients,
+	uint32_t* image_confidence_gradients_ray_count
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -1293,6 +1297,26 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	LossAndGradient lg_depth = loss_and_gradient(Array3f::Constant(target_depth), Array3f::Constant(depth_ray), depth_loss_type);
     float depth_loss_gradient = target_depth > 0.0f ? depth_supervision_lambda * lg_depth.gradient.x() : 0;
 
+	if (train_with_image_confidence_scores) {
+		float u = image_confidence_values[img];
+		float score = exp(-u);
+		lg = lg * score;
+		lg_depth = lg_depth * score;
+		depth_loss_gradient *= score;
+		
+		// compute gradient dl/du here
+		// float dldu = - loss_scale_rgb * lg.loss.sum() / 3.f - loss_scale_depth * depth_loss_gradient;
+		float dldu = - lg.loss.sum() / 3.f;
+		if (target_depth > 0.0f) {
+			dldu += - depth_supervision_lambda * lg_depth.loss.x();
+		}
+
+		atomicAdd(&image_confidence_gradients[img], dldu);
+		atomicAdd(&image_confidence_gradients_ray_count[img], 1);
+	}
+
+
+
 	// Note: dividing the gradient by the PDF would cause unbiased loss estimates.
 	// Essentially: variance reduction, but otherwise the same optimization.
 	// We _dont_ want that. If importance sampling is enabled, we _do_ actually want
@@ -1352,9 +1376,10 @@ __global__ void compute_loss_kernel_train_nerf_slam(
     if (total_rays_depth > 0) {
         loss_scale_depth = loss_scale / float(total_rays_depth);
     }
-    // float loss_scale_rgb = loss_scale / n_rays;
+	
+	// float loss_scale_rgb = loss_scale / n_rays;
     // float loss_scale_depth = loss_scale / n_rays;
-
+	
 	const float output_l2_reg = rgb_activation == ENerfActivation::Exponential ? 1e-4f : 0.0f;
 	const float output_l1_reg_density = *mean_density_ptr < NERF_MIN_OPTICAL_THICKNESS() ? 1e-4f : 0.0f;
 
@@ -2889,6 +2914,22 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 	load_nerf();
 	m_nerf.training.n_images_for_training = 0;
 	m_training_data_available = true;
+
+	if (m_nerf.training.train_with_image_confidence_scores) {
+		ArrayXf zero = ArrayXf::Zero(1);
+		m_nerf.training.image_confidence_scores.resize(
+			n_images, 
+			AdamOptimizer<ArrayXf>(1e-4f, zero)
+		);
+		m_nerf.training.image_confidence_gradient.resize(n_images);
+		m_nerf.training.image_confidence_gradient_gpu.resize(n_images);
+		m_nerf.training.image_confidence_values.resize(n_images, 0.f);
+		m_nerf.training.image_confidence_values_gpu.resize(n_images);
+		m_nerf.training.image_confidence_values_gpu.memset(0.f);
+		m_nerf.training.image_confidence_gradient_ray_count.resize(n_images);
+		m_nerf.training.image_confidence_gradient_ray_count_gpu.resize(n_images);
+		m_nerf.training.image_confidence_gradient_ray_count_gpu.memset(0);
+	}
 }
 
 void Testbed::expand_training_data(size_t n_additional_images) {
@@ -3939,6 +3980,26 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_focal_length_gradient_gpu.data(), 0, m_nerf.training.cam_focal_length_gradient_gpu.get_bytes(), stream));
 	}
 
+	if (m_nerf.training.n_steps_since_confidence_scores_update==0 && 
+	    m_nerf.training.train_with_image_confidence_scores) {
+		CUDA_CHECK_THROW(
+			cudaMemsetAsync(
+				m_nerf.training.image_confidence_gradient_gpu.data(), 
+				0, 
+				m_nerf.training.image_confidence_gradient_gpu.get_bytes(), 
+				stream
+			)
+		);
+		CUDA_CHECK_THROW(
+			cudaMemsetAsync(
+				m_nerf.training.image_confidence_gradient_ray_count_gpu.data(), 
+				0, 
+				m_nerf.training.image_confidence_gradient_ray_count_gpu.get_bytes(), 
+				stream
+			)
+		);
+	}
+
 	bool train_extra_dims = m_nerf.training.dataset.n_extra_learnable_dims > 0 && m_nerf.training.optimize_extra_dims;
 	uint32_t n_extra_dims = m_nerf.training.dataset.n_extra_dims();
 	if (train_extra_dims) {
@@ -3962,8 +4023,7 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 
 
 	train_nerf_slam_step(target_batch_size, m_nerf.training.counters_rgb, stream);
-
-
+	
 	m_trainer->optimizer_step(stream, LOSS_SCALE);
 
 	++m_training_step;
@@ -4046,7 +4106,6 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 	// Get extrinsics gradients
 	m_nerf.training.n_steps_since_cam_update += 1;
 
-
 	if (train_extra_dims) {
 		std::vector<float> extra_dims_gradient(m_nerf.training.extra_dims_gradient_gpu.size());
 		std::vector<float> &extra_dims_new_values = extra_dims_gradient; // just create an alias to make the code clearer.
@@ -4077,6 +4136,77 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.extra_dims_gpu.data(), extra_dims_new_values.data(), m_nerf.training.n_images_for_training * n_extra_dims * sizeof(float) , cudaMemcpyHostToDevice, stream));
 	}
 
+	
+	if (m_nerf.training.train_with_image_confidence_scores) {
+		
+		m_nerf.training.n_steps_since_confidence_scores_update += 1;
+
+		if (m_nerf.training.n_steps_since_confidence_scores_update >= m_nerf.training.n_steps_between_confidence_scores_updates) {
+			// float per_camera_loss_scale = 10.f / LOSS_SCALE / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
+			// float per_camera_loss_scale = 1.0f / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_confidence_gradient.data(), 
+							    m_nerf.training.image_confidence_gradient_gpu.data(), 
+								m_nerf.training.image_confidence_gradient_gpu.get_bytes(), 
+								cudaMemcpyDeviceToHost, stream)
+			);
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_confidence_gradient_ray_count.data(), 
+							    m_nerf.training.image_confidence_gradient_ray_count_gpu.data(), 
+								m_nerf.training.image_confidence_gradient_ray_count_gpu.get_bytes(), 
+								cudaMemcpyDeviceToHost, stream)
+			);
+			
+			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
+
+			uint32_t all_ray_cpt = std::accumulate(
+				m_nerf.training.image_confidence_gradient_ray_count.begin(),
+				m_nerf.training.image_confidence_gradient_ray_count.end(),
+				0
+			);
+
+			for (uint32_t k = 0; k < m_nerf.training.n_images_for_training_slam; ++k) {
+				
+            	uint32_t i = m_nerf.training.idx_images_for_training_slam[k];
+
+				uint32_t ray_cpt = m_nerf.training.image_confidence_gradient_ray_count[i];
+
+				if (ray_cpt > 0){
+					
+					// float conf_grad = m_nerf.training.image_confidence_gradient[i] / ( LOSS_SCALE * (float)ray_cpt );
+					float conf_grad = m_nerf.training.image_confidence_gradient[i] / (float)ray_cpt;
+					// float conf_grad = m_nerf.training.image_confidence_gradient[i] / (float)all_ray_cpt;
+					// float conf_grad = m_nerf.training.image_confidence_gradient[i];
+
+					ArrayXf image_conf_gradient = ArrayXf::Constant(1, conf_grad);
+
+					//TODO: add regularizer
+					float reg_coef = m_nerf.training.image_confidence_scores_reg;
+					image_conf_gradient += reg_coef;
+					
+					// tlog::info()<<" ray cpt: "<< ray_cpt<< " | grad_raw = "<<m_nerf.training.image_confidence_gradient[i]<< " | grad normed= "<< conf_grad<< " | grad+reg= " << image_conf_gradient[0];
+
+					//TODO: set better LR
+					// m_nerf.training.image_confidence_scores[i].set_learning_rate(5e-4);
+					m_nerf.training.image_confidence_scores[i].set_learning_rate(1e-2);
+
+					m_nerf.training.image_confidence_scores[i].step(image_conf_gradient);
+
+					m_nerf.training.image_confidence_values[i] = m_nerf.training.image_confidence_scores[i].variable()[0];
+				}
+			}
+			
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_confidence_values_gpu.data(), 
+							    m_nerf.training.image_confidence_values.data(), 
+								m_nerf.training.image_confidence_values_gpu.get_bytes(), 
+								cudaMemcpyHostToDevice, stream)
+			);
+
+			m_nerf.training.n_steps_since_confidence_scores_update = 0;
+
+		}
+	}
 
 
 	bool train_camera = m_nerf.training.optimize_extrinsics;
@@ -4103,13 +4233,6 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 
 				m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_pos * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
 				m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_rot * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
-
-                // float a = std::max(m_nerf.training.ba_extrinsic_learning_rate_pos * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f);
-
-                // tlog::info()<<"image: "<< i << " -- learning rate BA pos: "<< a;
-
-                // m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_pos);
-				// m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_rot);
 
 				m_nerf.training.cam_pos_offset[i].step(pos_gradient);
 				m_nerf.training.cam_rot_offset[i].step(rot_gradient);
@@ -4418,7 +4541,11 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		m_nerf.training.depth_supervision_lambda,
 		m_nerf.training.near_distance,
 		m_nerf.training.n_images_for_training_slam,
-		m_nerf.training.idx_images_for_training_slam_gpu.data()
+		m_nerf.training.idx_images_for_training_slam_gpu.data(),
+		m_nerf.training.train_with_image_confidence_scores,
+		m_nerf.training.train_with_image_confidence_scores ? m_nerf.training.image_confidence_values_gpu.data() : nullptr,
+		m_nerf.training.train_with_image_confidence_scores ? m_nerf.training.image_confidence_gradient_gpu.data() : nullptr,
+		m_nerf.training.train_with_image_confidence_scores ? m_nerf.training.image_confidence_gradient_ray_count_gpu.data() : nullptr
 	);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(

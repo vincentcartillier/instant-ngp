@@ -335,6 +335,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("enlarge", py::overload_cast<const Vector3f&>(&BoundingBox::enlarge))
 		.def("enlarge", py::overload_cast<const BoundingBox&>(&BoundingBox::enlarge))
 		.def("get_vertices", &BoundingBox::get_vertices)
+		.def("get_min", &BoundingBox::get_min)
+		.def("get_max", &BoundingBox::get_max)
 		.def("inflate", &BoundingBox::inflate)
 		.def("intersection", &BoundingBox::intersection)
 		.def("intersects", py::overload_cast<const BoundingBox&>(&BoundingBox::intersects, py::const_))
@@ -597,6 +599,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("visualize_cameras", &Testbed::Nerf::visualize_cameras)
 		.def_readwrite("glow_y_cutoff", &Testbed::Nerf::glow_y_cutoff)
 		.def_readwrite("glow_mode", &Testbed::Nerf::glow_mode)
+		.def_readwrite("finest_resolution", &Testbed::Nerf::finest_resolution)
 		;
 
 	py::class_<BRDFParams> brdfparams(m, "BRDFParams");
@@ -637,7 +640,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("envmap_resolution", &NerfDataset::envmap_resolution)
 		//.def_readonly("scale", &NerfDataset::scale)
 		.def_readwrite("scale", &NerfDataset::scale)
-		.def_readonly("aabb_scale", &NerfDataset::aabb_scale)
+		.def_readwrite("aabb_scale", &NerfDataset::aabb_scale)
 		.def_readonly("from_mitsuba", &NerfDataset::from_mitsuba)
 		.def_readonly("is_hdr", &NerfDataset::is_hdr)
 		.def_readwrite("wants_importance_sampling", &NerfDataset::wants_importance_sampling)
@@ -717,6 +720,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("rays_per_tracking_batch", &Testbed::Nerf::Training::rays_per_tracking_batch)
 		.def_readonly("tracking_gradients_super_rays", &Testbed::Nerf::Training::tracking_gradients_super_rays)
 		.def_readwrite("use_view_dir_in_nerf", &Testbed::Nerf::Training::use_view_dir_in_nerf)
+		.def_readwrite("train_with_image_confidence_scores", &Testbed::Nerf::Training::train_with_image_confidence_scores)
+		.def_readwrite("n_steps_between_confidence_scores_updates", &Testbed::Nerf::Training::n_steps_between_confidence_scores_updates)
+		.def_readwrite("image_confidence_scores_regularizer", &Testbed::Nerf::Training::image_confidence_scores_reg)
+		.def_readonly("image_confidence_values", &Testbed::Nerf::Training::image_confidence_values)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
