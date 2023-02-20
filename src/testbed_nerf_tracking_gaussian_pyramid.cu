@@ -428,6 +428,40 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 }
 
 
+
+__global__ void apply_photometric_correction_to_GT(
+	const uint32_t n_rays,
+	const uint32_t* __restrict__ ray_counter,
+	const uint32_t indice_image_for_tracking_pose,
+    const float* __restrict__ image_photometric_correction_params_coef,
+    const float* __restrict__ image_photometric_correction_params_intercept,
+	float* __restrict__ ground_truth_rgbd
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= *ray_counter) { return; }
+
+	float coef = image_photometric_correction_params_coef[indice_image_for_tracking_pose];
+	float intercept = image_photometric_correction_params_intercept[indice_image_for_tracking_pose];
+
+    ground_truth_rgbd[i*4+0] = coef * ground_truth_rgbd[i*4+0] + intercept;
+    ground_truth_rgbd[i*4+1] = coef * ground_truth_rgbd[i*4+1] + intercept;
+    ground_truth_rgbd[i*4+2] = coef * ground_truth_rgbd[i*4+2] + intercept;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 __global__ void convolution_gaussian_pyramid(
 	const uint32_t n_target_rays,
 	const uint32_t n_input_rays,
@@ -725,6 +759,69 @@ __global__ void backprop_thru_convs(
     new_partials[i*4+2] = rgb_grad.z();
     new_partials[i*4+3] = depth_grad;
 }
+
+
+
+
+
+
+
+
+__global__ void compute_gradients_wrt_photometric_params_and_update_partial_derivatives(
+	const uint32_t one,
+	const uint32_t n_rays,
+	const uint32_t* __restrict__ existing_ray_mapping_gpu,
+    const int32_t* __restrict__ mapping_indices,
+	const uint32_t indice_image_for_tracking_pose,
+    const float* __restrict__ image_photometric_correction_params_coef,
+    const float* __restrict__ image_photometric_correction_params_intercept,
+	const float* __restrict__ ground_truth_rgbd,
+	float* __restrict__ dL_dC_prime, 
+    float* __restrict__ image_photometric_correction_gradient_coef,
+    float* __restrict__ image_photometric_correction_gradient_intercept
+) {
+
+	float coef = image_photometric_correction_params_coef[indice_image_for_tracking_pose];
+	if (coef==0.) { return; }
+	float intercept = image_photometric_correction_params_intercept[indice_image_for_tracking_pose];
+
+	float dL_d_coef = 0.f;
+	float dL_d_intercept = 0.f;
+
+	float tmp_c;
+	uint32_t index_map;
+	int32_t ray_idx;
+
+	for (uint32_t k=0; k<n_rays; k++) {
+
+        index_map = existing_ray_mapping_gpu[k];
+        ray_idx = mapping_indices[index_map];
+        if (ray_idx < 0) {
+            continue;
+        } else {
+            index_map = ray_idx;
+        }
+
+		tmp_c = ( ground_truth_rgbd[index_map*4 + 0] - intercept ) / coef;
+		dL_d_coef += - dL_dC_prime[k*4 + 0] * tmp_c; 
+		dL_d_intercept += - dL_dC_prime[k*4 + 0]; 
+		dL_dC_prime[k*4 + 0] *= coef;
+
+		tmp_c = ( ground_truth_rgbd[index_map*4 + 1] - intercept ) / coef;
+		dL_d_coef += - dL_dC_prime[k*4 + 1] * tmp_c; 
+		dL_d_intercept += - dL_dC_prime[k*4 + 1]; 
+		dL_dC_prime[k*4 + 1] *= coef;
+		
+		tmp_c = ( ground_truth_rgbd[index_map*4 + 2] - intercept ) / coef;
+		dL_d_coef += - dL_dC_prime[k*4 + 2] * tmp_c; 
+		dL_d_intercept += - dL_dC_prime[k*4 + 2]; 
+		dL_dC_prime[k*4 + 2] *= coef;
+
+	}
+	image_photometric_correction_gradient_coef[indice_image_for_tracking_pose] = dL_d_coef;
+	image_photometric_correction_gradient_intercept[indice_image_for_tracking_pose] = dL_d_intercept;
+}
+
 
 
 __global__ void compute_gradient_gp(
@@ -1154,6 +1251,37 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, 
         m_nerf.training.tracking_gradients_super_rays.clear();
     }
 
+
+	if (m_nerf.training.n_steps_since_photometric_correction_update==0 && 
+	    m_nerf.training.train_with_photometric_corrections_in_tracking) {
+		//NOTE: TODO: we don't need the entire array of gradients in tracking
+		// We can only keep the one gradient of the currently tracked image.
+		CUDA_CHECK_THROW(
+			cudaMemsetAsync(
+				m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(), 
+				0, 
+				m_nerf.training.image_photometric_correction_gradient_coef_gpu.get_bytes(), 
+				stream
+			)
+		);
+		CUDA_CHECK_THROW(
+			cudaMemsetAsync(
+				m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data(), 
+				0, 
+				m_nerf.training.image_photometric_correction_gradient_intercept_gpu.get_bytes(), 
+				stream
+			)
+		);
+		CUDA_CHECK_THROW(
+			cudaMemsetAsync(
+				m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.data(), 
+				0, 
+				m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.get_bytes(), 
+				stream
+			)
+		);
+	}
+
 	track_pose_gaussian_pyramid_nerf_slam_step(target_batch_size, m_nerf.training.counters_rgb_track, stream);
 
     ++m_training_step_track;
@@ -1238,6 +1366,74 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, 
 		}
 
         m_nerf.training.n_steps_since_cam_update_tracking = 0;
+	}
+
+	if (m_nerf.training.train_with_photometric_corrections_in_tracking) {
+		
+		m_nerf.training.n_steps_since_photometric_correction_update += 1;
+
+		if (m_nerf.training.n_steps_since_photometric_correction_update >= m_nerf.training.n_steps_between_photometric_correction_updates) {
+			// float per_camera_loss_scale = 10.f / LOSS_SCALE / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
+			// float per_camera_loss_scale = 1.0f / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_coef.data(), 
+							    m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(), 
+								m_nerf.training.image_photometric_correction_gradient_coef_gpu.get_bytes(), 
+								cudaMemcpyDeviceToHost, stream)
+			);
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_intercept.data(), 
+							    m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data(), 
+								m_nerf.training.image_photometric_correction_gradient_intercept_gpu.get_bytes(), 
+								cudaMemcpyDeviceToHost, stream)
+			);
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_ray_count.data(), 
+							    m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.data(), 
+								m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.get_bytes(), 
+								cudaMemcpyDeviceToHost, stream)
+			);
+			
+			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
+
+			float per_camera_loss_scale = 1.0 / LOSS_SCALE / (float)m_nerf.training.n_steps_between_photometric_correction_updates;
+
+            uint32_t i = m_nerf.training.indice_image_for_tracking_pose;
+			
+			uint32_t ray_cpt = m_nerf.training.image_photometric_correction_gradient_ray_count[i];
+			
+			float grad_coef = m_nerf.training.image_photometric_correction_gradient_coef[i] * per_camera_loss_scale;
+			float grad_intercept = m_nerf.training.image_photometric_correction_gradient_intercept[i] * per_camera_loss_scale;
+			
+			ArrayXf grad_coef_arr = ArrayXf::Constant(1, grad_coef);
+			ArrayXf grad_intercept_arr = ArrayXf::Constant(1, grad_intercept);
+			
+			m_nerf.training.image_photometric_correction_variables_coef[i].set_learning_rate(m_nerf.training.image_photometric_correction_lr);
+			m_nerf.training.image_photometric_correction_variables_intercept[i].set_learning_rate(m_nerf.training.image_photometric_correction_lr);
+			
+			m_nerf.training.image_photometric_correction_variables_coef[i].step(grad_coef_arr);
+			m_nerf.training.image_photometric_correction_variables_intercept[i].step(grad_intercept_arr);
+			
+			m_nerf.training.image_photometric_correction_params_coef[i] = m_nerf.training.image_photometric_correction_variables_coef[i].variable()[0];
+			m_nerf.training.image_photometric_correction_params_intercept[i] = m_nerf.training.image_photometric_correction_variables_intercept[i].variable()[0];
+		
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_params_coef_gpu.data(), 
+							    m_nerf.training.image_photometric_correction_params_coef.data(), 
+								m_nerf.training.image_photometric_correction_params_coef_gpu.get_bytes(), 
+								cudaMemcpyHostToDevice, stream)
+			);
+	
+			CUDA_CHECK_THROW(
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_params_intercept_gpu.data(), 
+							    m_nerf.training.image_photometric_correction_params_intercept.data(), 
+								m_nerf.training.image_photometric_correction_params_intercept_gpu.get_bytes(), 
+								cudaMemcpyHostToDevice, stream)
+			);
+
+			m_nerf.training.n_steps_since_photometric_correction_update = 0;
+
+		}
 	}
 }
 
@@ -1510,6 +1706,19 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
         reconstructed_rgbd_gpu.data()
 	);
 
+	//NOTE: Using photometric corrections
+	// compute corrected GT RGB
+	if (m_nerf.training.train_with_photometric_corrections_in_tracking) {
+		linear_kernel(apply_photometric_correction_to_GT, 0, stream,
+        	n_total_rays_for_gradient,
+			ray_counter,
+        	m_nerf.training.indice_image_for_tracking_pose,
+			m_nerf.training.image_photometric_correction_params_coef_gpu.data(),
+			m_nerf.training.image_photometric_correction_params_intercept_gpu.data(),
+        	ground_truth_rgbd_gpu.data()
+		);
+	}
+
     //NOTE: get Depth reconstruction variance (ie confidence)
     tcnn::GPUMemory<float> reconstructed_depth_var_gpu;
     tcnn::GPUMemory<float> reconstructed_color_var_gpu;
@@ -1687,6 +1896,27 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
         partial_derivatives.push_back(tmp_dL_dB);
         gradients_tensors.pop_back();
     }
+
+
+	//NOTE: Using photometric corrections
+	// compute gradients wrt photometric parameters
+	// update latest partial derivative dL_dB
+	if (m_nerf.training.train_with_photometric_corrections_in_tracking) {
+		linear_kernel(compute_gradients_wrt_photometric_params_and_update_partial_derivatives, 0, stream,
+        	1,
+			n_total_rays,
+            existing_ray_mapping_gpu,
+            mapping_indices,
+        	m_nerf.training.indice_image_for_tracking_pose,
+			m_nerf.training.image_photometric_correction_params_coef_gpu.data(),
+			m_nerf.training.image_photometric_correction_params_intercept_gpu.data(),
+        	ground_truth_rgbd_gpu.data(),
+			partial_derivatives.back().data(),
+			m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(), 
+			m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data()
+		);
+	}
+
 
 	CUDA_CHECK_THROW(
        cudaMemcpyAsync(

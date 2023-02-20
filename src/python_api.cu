@@ -724,6 +724,13 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("n_steps_between_confidence_scores_updates", &Testbed::Nerf::Training::n_steps_between_confidence_scores_updates)
 		.def_readwrite("image_confidence_scores_regularizer", &Testbed::Nerf::Training::image_confidence_scores_reg)
 		.def_readonly("image_confidence_values", &Testbed::Nerf::Training::image_confidence_values)
+		.def_readwrite("train_with_photometric_corrections_in_tracking", &Testbed::Nerf::Training::train_with_photometric_corrections_in_tracking)
+		.def_readwrite("image_photometric_correction_reg", &Testbed::Nerf::Training::image_photometric_correction_reg)
+		.def_readwrite("image_photometric_correction_lr", &Testbed::Nerf::Training::image_photometric_correction_lr)
+		.def_readwrite("n_steps_between_photometric_correction_updates", &Testbed::Nerf::Training::n_steps_between_photometric_correction_updates)
+		.def_readonly("image_photometric_correction_params_coef", &Testbed::Nerf::Training::image_photometric_correction_params_coef)
+		.def_readonly("image_photometric_correction_params_intercept", &Testbed::Nerf::Training::image_photometric_correction_params_intercept)
+		.def_readwrite("use_photometric_correction_in_mapping", &Testbed::Nerf::Training::use_photometric_correction_in_mapping)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

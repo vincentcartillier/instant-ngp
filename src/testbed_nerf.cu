@@ -1167,7 +1167,9 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	const bool train_with_image_confidence_scores,
 	const float* __restrict__ image_confidence_values,
 	float* image_confidence_gradients,
-	uint32_t* image_confidence_gradients_ray_count
+	uint32_t* image_confidence_gradients_ray_count,
+	const float* __restrict__ image_photometric_correction_params_coef,
+	const float* __restrict__ image_photometric_correction_params_intercept
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -1266,6 +1268,12 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		} else {
 			rgbtarget = background_color;
 		}
+	}
+
+	if (image_photometric_correction_params_coef && image_photometric_correction_params_intercept){
+		float coef = image_photometric_correction_params_coef[img];
+		float intercept = image_photometric_correction_params_intercept[img];
+		rgbtarget = coef * rgbtarget + intercept;
 	}
 
 	if (compacted_numsteps == numsteps) {
@@ -1795,7 +1803,7 @@ __global__ void compute_loss_kernel_train_nerf(
 			rgbtarget = background_color;
 		}
 	}
-
+	
 	if (compacted_numsteps == numsteps) {
 		// support arbitrary background colors
 		rgb_ray += T * background_color;
@@ -2929,6 +2937,32 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 		m_nerf.training.image_confidence_gradient_ray_count.resize(n_images);
 		m_nerf.training.image_confidence_gradient_ray_count_gpu.resize(n_images);
 		m_nerf.training.image_confidence_gradient_ray_count_gpu.memset(0);
+	}
+
+	if (m_nerf.training.train_with_photometric_corrections_in_mapping || m_nerf.training.train_with_photometric_corrections_in_tracking) {
+		ArrayXf zero = ArrayXf::Zero(1);
+		m_nerf.training.image_photometric_correction_variables_intercept.resize(
+			n_images, 
+			AdamOptimizer<ArrayXf>(1e-4f, zero)
+		);
+		ArrayXf one = ArrayXf::Constant(1, 1.0f);
+		m_nerf.training.image_photometric_correction_variables_coef.resize(
+			n_images, 
+			AdamOptimizer<ArrayXf>(1e-4f, one)
+		);
+		m_nerf.training.image_photometric_correction_gradient_coef.resize(n_images);
+		m_nerf.training.image_photometric_correction_gradient_intercept.resize(n_images);
+		m_nerf.training.image_photometric_correction_gradient_coef_gpu.resize(n_images);
+		m_nerf.training.image_photometric_correction_gradient_intercept_gpu.resize(n_images);
+		m_nerf.training.image_photometric_correction_params_coef.resize(n_images, 1.f);
+		m_nerf.training.image_photometric_correction_params_intercept.resize(n_images, 0.f);
+		m_nerf.training.image_photometric_correction_params_coef_gpu.resize(n_images);
+		m_nerf.training.image_photometric_correction_params_coef_gpu.memset(1.f);
+		m_nerf.training.image_photometric_correction_params_intercept_gpu.resize(n_images);
+		m_nerf.training.image_photometric_correction_params_intercept_gpu.memset(0.f);
+		m_nerf.training.image_photometric_correction_gradient_ray_count.resize(n_images);
+		m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.resize(n_images);
+		m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.memset(0);
 	}
 }
 
@@ -4545,7 +4579,9 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		m_nerf.training.train_with_image_confidence_scores,
 		m_nerf.training.train_with_image_confidence_scores ? m_nerf.training.image_confidence_values_gpu.data() : nullptr,
 		m_nerf.training.train_with_image_confidence_scores ? m_nerf.training.image_confidence_gradient_gpu.data() : nullptr,
-		m_nerf.training.train_with_image_confidence_scores ? m_nerf.training.image_confidence_gradient_ray_count_gpu.data() : nullptr
+		m_nerf.training.train_with_image_confidence_scores ? m_nerf.training.image_confidence_gradient_ray_count_gpu.data() : nullptr,
+		m_nerf.training.use_photometric_correction_in_mapping ? m_nerf.training.image_photometric_correction_params_coef_gpu.data() : nullptr,
+		m_nerf.training.use_photometric_correction_in_mapping ? m_nerf.training.image_photometric_correction_params_intercept_gpu.data() : nullptr
 	);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(

@@ -702,6 +702,28 @@ public:
 			bool train_with_image_confidence_scores = false; 
 			float image_confidence_scores_reg = 5e-3f;
 
+			// Photometric distortion correction
+			std::vector<AdamOptimizer<Eigen::ArrayXf>> image_photometric_correction_variables_coef; 
+			std::vector<AdamOptimizer<Eigen::ArrayXf>> image_photometric_correction_variables_intercept; 
+			std::vector<float> image_photometric_correction_params_coef;
+			std::vector<float> image_photometric_correction_params_intercept;
+			tcnn::GPUMemory<float> image_photometric_correction_params_coef_gpu;
+			tcnn::GPUMemory<float> image_photometric_correction_params_intercept_gpu;
+			std::vector<float> image_photometric_correction_gradient_coef;
+			std::vector<float> image_photometric_correction_gradient_intercept;
+			tcnn::GPUMemory<float> image_photometric_correction_gradient_coef_gpu;
+			tcnn::GPUMemory<float> image_photometric_correction_gradient_intercept_gpu;
+			std::vector<uint32_t> image_photometric_correction_gradient_ray_count;
+			tcnn::GPUMemory<uint32_t> image_photometric_correction_gradient_ray_count_gpu;
+			uint32_t n_steps_between_photometric_correction_updates = 16;
+			uint32_t n_steps_since_photometric_correction_update = 0;
+			float image_photometric_correction_reg = 5e-3f;
+			float image_photometric_correction_lr = 5e-3f;
+			bool train_with_photometric_corrections_in_tracking = false; 
+			bool train_with_photometric_corrections_in_mapping = false; 
+			bool use_photometric_correction_in_mapping = false; 
+
+
 			tcnn::GPUMemory<float> extra_dims_gpu; // if the model demands a latent code per training image, we put them in here.
 			tcnn::GPUMemory<float> extra_dims_gradient_gpu;
 			std::vector<AdamOptimizer<Eigen::ArrayXf>> extra_dims_opt;
