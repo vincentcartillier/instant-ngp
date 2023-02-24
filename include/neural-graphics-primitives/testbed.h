@@ -70,6 +70,7 @@ public:
 	void clear_training_data();
 
     bool m_is_slam_mode = false; // Turn this on to train Nerf in SLAM mode
+	bool m_render_nerf_depth_with_var = false; // turn this on to render depth variance along with depth - get variance on 3rd channel
 
 	using distance_fun_t = std::function<void(uint32_t, const tcnn::GPUMemory<Eigen::Vector3f>&, tcnn::GPUMemory<float>&, cudaStream_t)>;
 	using normals_fun_t = std::function<void(uint32_t, const tcnn::GPUMemory<Eigen::Vector3f>&, tcnn::GPUMemory<Eigen::Vector3f>&, cudaStream_t)>;
@@ -186,7 +187,8 @@ public:
 			int glow_mode,
 			const float* extra_dims_gpu,
 			cudaStream_t stream,
-			const bool use_view_dir
+			const bool use_view_dir,
+			const bool render_depth_var
 		);
 
 		void enlarge(size_t n_elements, uint32_t padded_output_width, uint32_t n_extra_dims, cudaStream_t stream);

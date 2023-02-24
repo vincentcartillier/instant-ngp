@@ -95,7 +95,8 @@ __global__ void composite_kernel_nerf(
 	ENerfActivation rgb_activation,
 	ENerfActivation density_activation,
 	int show_accel,
-	float min_transmittance
+	float min_transmittance,
+	bool render_depth_var
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -276,6 +277,35 @@ __global__ void composite_kernel_nerf(
 	if (j < n_steps) {
 		payload.alive = false;
 		payload.n_steps = j + current_step;
+	}
+
+	
+	
+	if (render_depth_var) {
+		float rec_depth = local_rgba.x();
+		float depth_var = 0.f;
+		float T = 1.f;
+		for (uint32_t k=0; k < j+1; ++k) {
+			tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output;
+			local_network_output[3] = network_output[i + k * n_elements + 3 * stride];
+			const NerfCoordinate* input = network_input(i + k * n_elements);
+			Vector3f warped_pos = input->pos.p;
+			Vector3f pos = unwarp_position(warped_pos, aabb);
+
+			float dt = unwarp_dt(input->dt);
+			float alpha = 1.f - __expf(-network_to_density(float(local_network_output[3]), density_activation) * dt);
+			float weight = alpha * T;
+
+			float cur_depth = cam_fwd.dot(pos - origin) * depth_scale;
+        	
+			float tmp = (cur_depth - rec_depth) * (cur_depth - rec_depth);
+
+        	depth_var += weight * tmp;
+			
+			T *= (1.f - alpha);
+		}
+
+		local_rgba.z() = depth_var;
 	}
 
 	rgba[i] = local_rgba;
@@ -2470,7 +2500,8 @@ uint32_t Testbed::NerfTracer::trace(
 	int glow_mode,
 	const float* extra_dims_gpu,
 	cudaStream_t stream,
-	const bool use_view_dir
+	const bool use_view_dir,
+	const bool render_depth_var
 ) {
 	if (m_n_rays_initialized == 0) {
 		return 0;
@@ -2561,7 +2592,8 @@ uint32_t Testbed::NerfTracer::trace(
 			rgb_activation,
 			density_activation,
 			show_accel,
-			min_transmittance
+			min_transmittance,
+			render_depth_var
 		);
 
 		i += n_steps_between_compaction;
@@ -2721,7 +2753,8 @@ void Testbed::render_nerf(CudaRenderBuffer& render_buffer, const Vector2i& max_r
 			m_nerf.glow_mode,
 			extra_dims_gpu,
 			stream,
-			m_nerf.training.use_view_dir_in_nerf
+			m_nerf.training.use_view_dir_in_nerf,
+			m_render_nerf_depth_with_var
 		);
 	}
 	RaysNerfSoa& rays_hit = m_render_mode == ERenderMode::Slice ? m_nerf.tracer.rays_init() : m_nerf.tracer.rays_hit();
@@ -4267,6 +4300,8 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 
 				m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_pos * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
 				m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_rot * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+				//m_nerf.training.cam_pos_offset[i].set_learning_rate(0.001f);
+				//m_nerf.training.cam_rot_offset[i].set_learning_rate(0.001f);
 
 				m_nerf.training.cam_pos_offset[i].step(pos_gradient);
 				m_nerf.training.cam_rot_offset[i].step(rot_gradient);

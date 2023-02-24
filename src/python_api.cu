@@ -485,6 +485,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("tracking_border_margin_W", &Testbed::m_sample_away_from_border_margin_w)
 		.def_readwrite("tracking_border_margin_H", &Testbed::m_sample_away_from_border_margin_h)
 		.def_readwrite("is_slam_mode", &Testbed::m_is_slam_mode)
+		.def_readwrite("m_render_nerf_depth_with_var", &Testbed::m_render_nerf_depth_with_var)
 		.def_readwrite("dynamic_res", &Testbed::m_dynamic_res)
 		.def_readwrite("dynamic_res_target_fps", &Testbed::m_dynamic_res_target_fps)
 		.def_readwrite("fixed_res_factor", &Testbed::m_fixed_res_factor)
