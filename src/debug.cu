@@ -219,7 +219,7 @@ int main(int argc, char** argv) {
 
     instant_ngp.m_train = true;
     uint32_t batch_size=256000;
-    for (uint32_t i=0; i<100; ++i) {
+    for (uint32_t i=0; i<1000; ++i) {
         instant_ngp.train(batch_size);
     }
 
@@ -228,17 +228,24 @@ int main(int argc, char** argv) {
     // train tracking on second image
     tlog::info()<<" Start Tracking";
     instant_ngp.m_nerf.training.indice_image_for_tracking_pose = 1;
-    instant_ngp.m_nerf.training.extrinsic_learning_rate_pos = 0.01 * 0.01;
-    instant_ngp.m_nerf.training.extrinsic_learning_rate_rot = 0.002 * 0.01;
+    instant_ngp.m_nerf.training.extrinsic_learning_rate_pos = 0.0005;
+    instant_ngp.m_nerf.training.extrinsic_learning_rate_rot = 0.001;
     instant_ngp.m_nerf.training.separate_pos_and_rot_lr = true;
     // instant_ngp.m_nerf.training.track_loss_type = ngp.LossType.L2;
     // instant_ngp.m_nerf.training.track_depth_loss_type = ngp.LossType.L1
-    instant_ngp.m_tracking_kernel_window_size = 1;
-    instant_ngp.m_sample_away_from_border_margin_w = 0;
-    instant_ngp.m_sample_away_from_border_margin_h = 0;
+    instant_ngp.m_nerf.training.depth_supervision_lambda = 0.0f;
+    instant_ngp.m_sample_away_from_border_margin_w = 20;
+    instant_ngp.m_sample_away_from_border_margin_h = 20;
+    instant_ngp.m_tracking_mode=2;
 
-    batch_size=256000;
-    for (uint32_t i=0; i<10; ++i) {
+    instant_ngp.m_nerf.training.n_steps_between_cam_updates_tracking=25;
+    instant_ngp.m_nerf.training.rays_per_tracking_batch = 4096;
+
+    batch_size=256000 * 5;
+
+    instant_ngp.m_tracking_gaussian_pyramid_level=3;
+
+    for (uint32_t i=0; i<1000; ++i) {
         instant_ngp.track_pose(batch_size);
     }
 

@@ -397,6 +397,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
 		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
 		.def("track_pose", &Testbed::track_pose, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of tracking steps.")
+		.def("bundle_adjustment", &Testbed::bundle_adjustment, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of tracking steps.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.",
 			py::arg("due_to_camera_movement") = false,
@@ -472,6 +473,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("tracking_rec_depth_var_at_level", &Testbed::m_tracking_reconstructed_depth_var_at_level)
 		.def_readonly("tracking_pos_gradient_norm", &Testbed::m_tracking_pos_gradient_norm)
 		.def_readonly("tracking_rot_gradient_norm", &Testbed::m_tracking_rot_gradient_norm)
+		.def_readonly("ba_loss", &Testbed::m_ba_loss)
+		.def_readonly("ba_loss_depth", &Testbed::m_ba_loss_depth)
 		.def_readonly("tracking_loss", &Testbed::m_tracking_loss)
 		.def_readonly("tracking_loss_depth", &Testbed::m_tracking_loss_depth)
 		.def_readonly("mapping_loss", &Testbed::m_mapping_loss)
@@ -565,6 +568,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("crop_box", &Testbed::crop_box, py::arg("nerf_space") = true)
 		.def("set_crop_box", &Testbed::set_crop_box, py::arg("matrix"), py::arg("nerf_space") = true)
 		.def("crop_box_corners", &Testbed::crop_box_corners, py::arg("nerf_space") = true)
+		.def("set_nerf_learning_rate", &Testbed::set_nerf_model_learning_rate, py::arg("params"))
+		.def("get_nerf_learning_rate", &Testbed::get_nerf_model_learning_rate)
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -654,6 +659,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("n_steps_between_cam_updates", &Testbed::Nerf::Training::n_steps_between_cam_updates)
 		.def_readwrite("n_steps_since_cam_update_tracking", &Testbed::Nerf::Training::n_steps_since_cam_update_tracking)
 		.def_readwrite("n_steps_between_cam_updates_tracking", &Testbed::Nerf::Training::n_steps_between_cam_updates_tracking)
+		.def_readwrite("n_steps_since_cam_update_ba", &Testbed::Nerf::Training::n_steps_since_cam_update_ba)
+		.def_readwrite("n_steps_between_cam_updates_ba", &Testbed::Nerf::Training::n_steps_between_cam_updates_ba)
+		.def_readwrite("n_steps_since_map_update_ba", &Testbed::Nerf::Training::n_steps_since_map_update_ba)
+		.def_readwrite("n_steps_between_map_updates_ba", &Testbed::Nerf::Training::n_steps_between_map_updates_ba)
 		.def_readonly("counters_rgb_track", &Testbed::Nerf::Training::counters_rgb_track)
 		.def_readwrite("random_bg_color", &Testbed::Nerf::Training::random_bg_color)
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
@@ -732,6 +741,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("image_photometric_correction_params_coef", &Testbed::Nerf::Training::image_photometric_correction_params_coef)
 		.def_readonly("image_photometric_correction_params_intercept", &Testbed::Nerf::Training::image_photometric_correction_params_intercept)
 		.def_readwrite("use_photometric_correction_in_mapping", &Testbed::Nerf::Training::use_photometric_correction_in_mapping)
+		//debug DBA
+		.def_readonly("xy_image_super_pixel_at_level_indices_int", &Testbed::Nerf::Training::xy_image_super_pixel_at_level_indices_int_cpu)
+		.def_readonly("xy_image_pixel_indices_int", &Testbed::Nerf::Training::xy_image_pixel_indices_int_cpu)
+		.def_readonly("image_ids", &Testbed::Nerf::Training::image_ids)
+		.def_readonly("reconstructed_rgbd_cpu", &Testbed::Nerf::Training::reconstructed_rgbd_cpu)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

@@ -2601,6 +2601,21 @@ void Testbed::train(uint32_t batch_size) {
 }
 
 
+void Testbed::bundle_adjustment(uint32_t batch_size, bool motion_only) {
+	if (!m_training_data_available) {
+		return;
+	}
+    //TODO:
+	bool get_loss_scalar = m_training_step_ba % 1 == 0;
+	{
+        bundle_adjustment_gaussian_pyramid_nerf_slam(batch_size, get_loss_scalar, m_stream.get(), motion_only);
+
+		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
+	}
+}
+
+
+
 
 void Testbed::track_pose(uint32_t batch_size) {
 	if (!m_training_data_available) {

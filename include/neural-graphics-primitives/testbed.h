@@ -411,6 +411,43 @@ public:
     // =======================================
 
 
+    // =======================================
+    // =======================================
+    // Bundle Adjustment
+    // =======================================
+    // =======================================
+ 
+    void bundle_adjustment(uint32_t batch_size, bool motion_only=false);
+	void bundle_adjustment_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream, bool motion_only);
+	void bundle_adjustment_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream, const bool motion_only);
+    void sample_pixels_for_ba_with_gaussian_pyramid(
+        const uint32_t max_rays_per_batch,
+        uint32_t& ray_counter,
+        uint32_t& super_ray_counter,
+        uint32_t& ray_counter_for_gradient,
+        std::vector<float>& xy_image_pixel_indices,
+        std::vector<uint32_t>& xy_image_pixel_indices_int,
+        std::vector<uint32_t>& xy_image_super_pixel_at_level_indices_int_cpu,
+        std::vector<uint32_t>& ray_mapping,
+        const bool snap_to_pixel_centers,
+        const uint32_t sample_away_from_border_margin_h,
+        const uint32_t sample_away_from_border_margin_w,
+        default_rng_t& rng,
+        const std::vector<int>& rf,
+        const uint32_t& super_ray_window_size,
+        const uint32_t& ray_stride,
+        const Eigen::Vector2i& resolution,
+        const Eigen::Vector2i& resolution_at_level,
+        const uint32_t& level,
+        const std::vector<uint32_t>& idx_images_for_training_slam_pose,
+        std::vector<uint32_t>& image_ids
+    );
+	void set_nerf_model_learning_rate(const nlohmann::json& params);
+	float get_nerf_model_learning_rate();
+
+
+
+
     void train_sdf(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_image(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void set_train(bool mtrain);
@@ -551,7 +588,12 @@ public:
 
     float m_mapping_loss=0.f;
     float m_mapping_loss_depth=0.f;
-
+    
+	
+    // Bundle adjustement related vars
+	float m_ba_loss=0.f;
+    float m_ba_loss_depth=0.f;
+ 
 	// Rendering stuff
 	Eigen::Vector2i m_window_res = Eigen::Vector2i::Constant(0);
 	bool m_dynamic_res = true;
@@ -725,6 +767,16 @@ public:
 			bool train_with_photometric_corrections_in_mapping = false; 
 			bool use_photometric_correction_in_mapping = false; 
 
+			// Bundle adjustment
+            std::vector<float> ray_counter_per_image;
+			//FOR DEBUG
+    		std::vector<uint32_t> xy_image_super_pixel_at_level_indices_int_cpu;
+    		std::vector<uint32_t> xy_image_pixel_indices_int_cpu;
+    		std::vector<uint32_t> image_ids;
+    		std::vector<float> reconstructed_rgbd_cpu;
+
+
+
 
 			tcnn::GPUMemory<float> extra_dims_gpu; // if the model demands a latent code per training image, we put them in here.
 			tcnn::GPUMemory<float> extra_dims_gradient_gpu;
@@ -748,6 +800,7 @@ public:
 
 			NerfCounters counters_rgb;
 			NerfCounters counters_rgb_track;
+			NerfCounters counters_rgb_ba;
 
 			bool random_bg_color = true;
 			bool linear_colors = false;
@@ -769,6 +822,11 @@ public:
 			uint32_t n_steps_since_cam_update = 0;
 			uint32_t n_steps_since_cam_update_tracking = 0;
 			uint32_t n_steps_between_cam_updates_tracking = 1;
+			
+			uint32_t n_steps_since_cam_update_ba = 0;
+			uint32_t n_steps_between_cam_updates_ba = 1;
+			uint32_t n_steps_since_map_update_ba = 0;
+			uint32_t n_steps_between_map_updates_ba = 1;
 
 			bool sample_focal_plane_proportional_to_error = false;
 			bool sample_image_proportional_to_error = false;
@@ -1012,9 +1070,11 @@ public:
 
 	uint32_t m_training_step = 0;
 	uint32_t m_training_step_track = 0;
+	uint32_t m_training_step_ba = 0;
 	uint32_t m_training_batch_size = 1 << 18;
 	Ema m_loss_scalar = {EEmaType::Time, 100};
 	Ema m_loss_scalar_track = {EEmaType::Time, 100};
+	Ema m_loss_scalar_ba = {EEmaType::Time, 100};
 	std::vector<float> m_loss_graph = std::vector<float>(256, 0.0f);
 	size_t m_loss_graph_samples = 0;
 

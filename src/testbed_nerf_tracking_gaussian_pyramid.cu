@@ -19,6 +19,7 @@
 
 #include <filesystem/directory.h>
 #include <filesystem/path.h>
+#include <json/json.hpp>
 
 #include <cmath>
 
@@ -72,6 +73,7 @@ __global__ void generate_training_samples_for_tracking_gp(
 	const float* __restrict__ extra_dims_gpu,
 	uint32_t n_extra_dims,
 	const uint32_t indice_image_for_tracking_pose,
+    const uint32_t* __restrict__ image_ids,
 	int32_t* __restrict__ mapping_indices,
     const uint32_t* __restrict__ existing_ray_mapping_gpu,
     const float* __restrict__ xy_image_pixel_indices,
@@ -84,7 +86,12 @@ __global__ void generate_training_samples_for_tracking_gp(
 
     if (existing_ray_mapping_gpu[i]!=i) return;
 
-    uint32_t img = indice_image_for_tracking_pose;
+	uint32_t img;
+	if (image_ids) {
+    	img = image_ids[i];
+	} else {
+    	img = indice_image_for_tracking_pose;
+	}
 
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
@@ -308,6 +315,7 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 	const Eigen::Array3f* __restrict__ exposure,
 	float depth_supervision_lambda,
 	const uint32_t indice_image_for_tracking_pose,
+    const uint32_t* __restrict__ image_ids,
     const float* __restrict__ xy_image_pixel_indices,
 	float* __restrict__ ground_truth_rgbd,
 	float* __restrict__ reconstructed_rgbd
@@ -363,7 +371,13 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 	uint32_t ray_idx = ray_indices[i];
 	rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
 
-	uint32_t img = indice_image_for_tracking_pose;
+	uint32_t img;
+	if (image_ids) {
+		img = image_ids[ray_idx];
+	} else {
+		img = indice_image_for_tracking_pose;
+	}
+
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
     Vector2f xy = Vector2f(xy_image_pixel_indices[2*ray_idx], xy_image_pixel_indices[2*ray_idx+1]);
@@ -626,6 +640,7 @@ __global__ void compute_loss_gp(
 ) {
 
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+
 	if (i >= n_rays) { return; }
 
     uint32_t super_i;
@@ -692,21 +707,21 @@ __global__ void compute_loss_gp(
         if (rec_depth_var < 1e-6){
             rec_depth_var = 1e-6;
         }
-        
+
 		float rec_depth_std = sqrt(rec_depth_var);
-        
+
 		lg_depth.loss.x() /= rec_depth_std;
         lg_depth.gradient.x() /= rec_depth_std;
 
     }
-	
+
 	if (use_color_var_in_loss) {
 	    float rec_color_var = reconstructed_color_var[super_i];
-        
+
 		if (rec_color_var < 1e-6){
             rec_color_var = 1e-6;
         }
-        
+
 		float rec_color_std = sqrt(rec_color_var);
 
         lg.loss /= rec_color_std;
@@ -776,7 +791,7 @@ __global__ void compute_gradients_wrt_photometric_params_and_update_partial_deri
     const float* __restrict__ image_photometric_correction_params_coef,
     const float* __restrict__ image_photometric_correction_params_intercept,
 	const float* __restrict__ ground_truth_rgbd,
-	float* __restrict__ dL_dC_prime, 
+	float* __restrict__ dL_dC_prime,
     float* __restrict__ image_photometric_correction_gradient_coef,
     float* __restrict__ image_photometric_correction_gradient_intercept
 ) {
@@ -803,18 +818,18 @@ __global__ void compute_gradients_wrt_photometric_params_and_update_partial_deri
         }
 
 		tmp_c = ( ground_truth_rgbd[index_map*4 + 0] - intercept ) / coef;
-		dL_d_coef += - dL_dC_prime[k*4 + 0] * tmp_c; 
-		dL_d_intercept += - dL_dC_prime[k*4 + 0]; 
+		dL_d_coef += - dL_dC_prime[k*4 + 0] * tmp_c;
+		dL_d_intercept += - dL_dC_prime[k*4 + 0];
 		dL_dC_prime[k*4 + 0] *= coef;
 
 		tmp_c = ( ground_truth_rgbd[index_map*4 + 1] - intercept ) / coef;
-		dL_d_coef += - dL_dC_prime[k*4 + 1] * tmp_c; 
-		dL_d_intercept += - dL_dC_prime[k*4 + 1]; 
+		dL_d_coef += - dL_dC_prime[k*4 + 1] * tmp_c;
+		dL_d_intercept += - dL_dC_prime[k*4 + 1];
 		dL_dC_prime[k*4 + 1] *= coef;
-		
+
 		tmp_c = ( ground_truth_rgbd[index_map*4 + 2] - intercept ) / coef;
-		dL_d_coef += - dL_dC_prime[k*4 + 2] * tmp_c; 
-		dL_d_intercept += - dL_dC_prime[k*4 + 2]; 
+		dL_d_coef += - dL_dC_prime[k*4 + 2] * tmp_c;
+		dL_d_intercept += - dL_dC_prime[k*4 + 2];
 		dL_dC_prime[k*4 + 2] *= coef;
 
 	}
@@ -1002,6 +1017,7 @@ __global__ void compute_camera_gradient_gp(
 	const Vector2i distortion_resolution,
 	Vector2f* cam_focal_length_gradient,
 	const uint32_t indice_image_for_tracking_pose,
+    const uint32_t* __restrict__ image_ids,
     const float* __restrict__ xy_image_pixel_indices,
     const uint32_t ray_stride,
     float* __restrict__ super_ray_gradients
@@ -1023,7 +1039,13 @@ __global__ void compute_camera_gradient_gp(
 	// Must be same seed as above to obtain the same
 	// background color.
 	uint32_t ray_idx = ray_indices[i];
-    uint32_t img = indice_image_for_tracking_pose;
+
+	uint32_t img;
+	if (image_ids) {
+    	img = image_ids[ray_idx];
+	} else {
+    	img = indice_image_for_tracking_pose;
+	}
 
 
 	Eigen::Vector2i resolution = metadata[img].resolution;
@@ -1219,6 +1241,116 @@ void Testbed::sample_pixels_for_tracking_with_gaussian_pyramid(
 
 }
 
+void Testbed::sample_pixels_for_ba_with_gaussian_pyramid(
+    const uint32_t max_rays_per_batch,
+    uint32_t& ray_counter,
+    uint32_t& super_ray_counter,
+    uint32_t& ray_counter_for_gradient,
+    std::vector<float>& xy_image_pixel_indices,
+    std::vector<uint32_t>& xy_image_pixel_indices_int,
+    std::vector<uint32_t>& xy_image_super_pixel_at_level_indices_int_cpu,
+    std::vector<uint32_t>& ray_mapping,
+    const bool snap_to_pixel_centers,
+    const uint32_t sample_away_from_border_margin_h,
+    const uint32_t sample_away_from_border_margin_w,
+    default_rng_t& rng,
+    const std::vector<int>& rf,
+    const uint32_t& super_ray_window_size,
+    const uint32_t& ray_stride,
+	const Vector2i& resolution,
+    const Vector2i& resolution_at_level,
+    const uint32_t& level,
+    const std::vector<uint32_t>& idx_images_for_training_slam_pose,
+    std::vector<uint32_t>& image_ids
+) {
+    // get the at level sampling margins
+    int margin_r = (int) ceil(((float) (sample_away_from_border_margin_h + (uint32_t) rf[1])) / pow(2.0, (float) level));
+    int margin_c = (int) ceil(((float) (sample_away_from_border_margin_w + (uint32_t) rf[3])) / pow(2.0, (float) level));
+    Vector2i margins_at_level(margin_c, margin_r);
+    Vector2i bounds_at_level = resolution_at_level - 2*margins_at_level;
+
+    //init vars
+    Vector2f rng_xy;
+    Vector2i xy_at_level_int;
+    Vector2f xy_at_level;
+    Vector2f xy;
+    Vector2i half_kernel_size(rf[1], rf[3]);
+    Vector2f half_kernel_size_float = half_kernel_size.cast<float>();
+    Vector2i tmp_uv;
+    Vector2f tmp_d;
+    Vector2f tmp_xy_int;
+    Vector2f tmp_xy;
+    uint32_t key;
+
+    uint32_t cpt=0;
+    std::unordered_map<uint32_t, uint32_t> tmp_dict;
+    while ( (ray_counter + ray_stride) < max_rays_per_batch) {
+
+        ++super_ray_counter;
+
+		// sample image
+		int rng_i = std::rand() % idx_images_for_training_slam_pose.size();
+		uint32_t img = idx_images_for_training_slam_pose[rng_i];
+		m_nerf.training.ray_counter_per_image[img] += 1;
+
+        // sample a pixel at level
+        rng_xy.x() = rng.next_float();
+        rng_xy.y() = rng.next_float();
+
+        xy_at_level_int = rng_xy.cwiseProduct(bounds_at_level.cast<float>()).cast<int>();
+        xy_at_level_int = xy_at_level_int + margins_at_level; // sampled pixel (int) at level
+
+        xy_at_level_int = xy_at_level_int.cwiseMax(margins_at_level).cwiseMin(resolution_at_level - margins_at_level - Vector2i::Ones());
+
+        xy_image_super_pixel_at_level_indices_int_cpu.push_back(xy_at_level_int.x());
+        xy_image_super_pixel_at_level_indices_int_cpu.push_back(xy_at_level_int.y());
+
+        xy_at_level = xy_at_level_int.cast<float>();
+
+        // grab the corresponding pixels in OG rez
+        xy = xy_at_level * pow(2.0, (float) level);
+
+        // populate the output vectors
+	    for (uint32_t u = 0; u < super_ray_window_size; ++u) {
+	        for (uint32_t v = 0; v < super_ray_window_size; ++v) {
+
+                ++ray_counter;
+
+                tmp_uv = Vector2i(v,u);
+                tmp_d = tmp_uv.cast<float>() - half_kernel_size_float;
+                tmp_xy_int = xy + tmp_d;
+
+	            if (snap_to_pixel_centers) {
+	            	tmp_xy = (tmp_xy_int + Vector2f::Constant(0.5f)).cwiseQuotient(resolution.cast<float>());
+	            } else {
+	            	tmp_xy = tmp_xy_int.cwiseQuotient(resolution.cast<float>());
+                }
+
+                xy_image_pixel_indices.push_back(tmp_xy.x());
+                xy_image_pixel_indices.push_back(tmp_xy.y());
+
+                xy_image_pixel_indices_int.push_back(tmp_xy_int.x());
+                xy_image_pixel_indices_int.push_back(tmp_xy_int.y());
+
+                // check if ray exists
+				//NOTE: hacky way to not do it - very unlikely since we're sampling across diff images
+                key = tmp_xy_int.x() + tmp_xy_int.y() * resolution.x();
+                ray_mapping.push_back(cpt);
+                tmp_dict[key] = cpt;
+                ++ray_counter_for_gradient;
+
+				// add image id info
+    			image_ids.push_back(img);
+
+                ++cpt;
+
+            }
+        }
+
+    }
+
+}
+
 void Testbed::get_receptive_field_of_gaussian_pyramid_at_level(uint32_t level, std::vector<int>& rf) {
     if (rf.empty()){
         rf = {0,0,0,0};
@@ -1252,31 +1384,31 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, 
     }
 
 
-	if (m_nerf.training.n_steps_since_photometric_correction_update==0 && 
+	if (m_nerf.training.n_steps_since_photometric_correction_update==0 &&
 	    m_nerf.training.train_with_photometric_corrections_in_tracking) {
 		//NOTE: TODO: we don't need the entire array of gradients in tracking
 		// We can only keep the one gradient of the currently tracked image.
 		CUDA_CHECK_THROW(
 			cudaMemsetAsync(
-				m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(), 
-				0, 
-				m_nerf.training.image_photometric_correction_gradient_coef_gpu.get_bytes(), 
+				m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(),
+				0,
+				m_nerf.training.image_photometric_correction_gradient_coef_gpu.get_bytes(),
 				stream
 			)
 		);
 		CUDA_CHECK_THROW(
 			cudaMemsetAsync(
-				m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data(), 
-				0, 
-				m_nerf.training.image_photometric_correction_gradient_intercept_gpu.get_bytes(), 
+				m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data(),
+				0,
+				m_nerf.training.image_photometric_correction_gradient_intercept_gpu.get_bytes(),
 				stream
 			)
 		);
 		CUDA_CHECK_THROW(
 			cudaMemsetAsync(
-				m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.data(), 
-				0, 
-				m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.get_bytes(), 
+				m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.data(),
+				0,
+				m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.get_bytes(),
 				stream
 			)
 		);
@@ -1369,65 +1501,65 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, 
 	}
 
 	if (m_nerf.training.train_with_photometric_corrections_in_tracking) {
-		
+
 		m_nerf.training.n_steps_since_photometric_correction_update += 1;
 
 		if (m_nerf.training.n_steps_since_photometric_correction_update >= m_nerf.training.n_steps_between_photometric_correction_updates) {
 			// float per_camera_loss_scale = 10.f / LOSS_SCALE / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
 			// float per_camera_loss_scale = 1.0f / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_coef.data(), 
-							    m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(), 
-								m_nerf.training.image_photometric_correction_gradient_coef_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_coef.data(),
+							    m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(),
+								m_nerf.training.image_photometric_correction_gradient_coef_gpu.get_bytes(),
 								cudaMemcpyDeviceToHost, stream)
 			);
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_intercept.data(), 
-							    m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data(), 
-								m_nerf.training.image_photometric_correction_gradient_intercept_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_intercept.data(),
+							    m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data(),
+								m_nerf.training.image_photometric_correction_gradient_intercept_gpu.get_bytes(),
 								cudaMemcpyDeviceToHost, stream)
 			);
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_ray_count.data(), 
-							    m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.data(), 
-								m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_gradient_ray_count.data(),
+							    m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.data(),
+								m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.get_bytes(),
 								cudaMemcpyDeviceToHost, stream)
 			);
-			
+
 			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
 
 			float per_camera_loss_scale = 1.0 / LOSS_SCALE / (float)m_nerf.training.n_steps_between_photometric_correction_updates;
 
             uint32_t i = m_nerf.training.indice_image_for_tracking_pose;
-			
+
 			uint32_t ray_cpt = m_nerf.training.image_photometric_correction_gradient_ray_count[i];
-			
+
 			float grad_coef = m_nerf.training.image_photometric_correction_gradient_coef[i] * per_camera_loss_scale;
 			float grad_intercept = m_nerf.training.image_photometric_correction_gradient_intercept[i] * per_camera_loss_scale;
-			
+
 			ArrayXf grad_coef_arr = ArrayXf::Constant(1, grad_coef);
 			ArrayXf grad_intercept_arr = ArrayXf::Constant(1, grad_intercept);
-			
+
 			m_nerf.training.image_photometric_correction_variables_coef[i].set_learning_rate(m_nerf.training.image_photometric_correction_lr);
 			m_nerf.training.image_photometric_correction_variables_intercept[i].set_learning_rate(m_nerf.training.image_photometric_correction_lr);
-			
+
 			m_nerf.training.image_photometric_correction_variables_coef[i].step(grad_coef_arr);
 			m_nerf.training.image_photometric_correction_variables_intercept[i].step(grad_intercept_arr);
-			
+
 			m_nerf.training.image_photometric_correction_params_coef[i] = m_nerf.training.image_photometric_correction_variables_coef[i].variable()[0];
 			m_nerf.training.image_photometric_correction_params_intercept[i] = m_nerf.training.image_photometric_correction_variables_intercept[i].variable()[0];
-		
+
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_params_coef_gpu.data(), 
-							    m_nerf.training.image_photometric_correction_params_coef.data(), 
-								m_nerf.training.image_photometric_correction_params_coef_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_params_coef_gpu.data(),
+							    m_nerf.training.image_photometric_correction_params_coef.data(),
+								m_nerf.training.image_photometric_correction_params_coef_gpu.get_bytes(),
 								cudaMemcpyHostToDevice, stream)
 			);
-	
+
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_params_intercept_gpu.data(), 
-							    m_nerf.training.image_photometric_correction_params_intercept.data(), 
-								m_nerf.training.image_photometric_correction_params_intercept_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_photometric_correction_params_intercept_gpu.data(),
+							    m_nerf.training.image_photometric_correction_params_intercept.data(),
+								m_nerf.training.image_photometric_correction_params_intercept_gpu.get_bytes(),
 								cudaMemcpyHostToDevice, stream)
 			);
 
@@ -1632,6 +1764,7 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 		m_nerf.training.extra_dims_gpu.data(),
 		m_nerf_network->n_extra_dims(),
         m_nerf.training.indice_image_for_tracking_pose,
+		nullptr,
 		mapping_indices,
         existing_ray_mapping_gpu,
         xy_image_pixel_indices,
@@ -1701,6 +1834,7 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 		m_nerf.training.cam_exposure_gpu.data(),
 		m_nerf.training.depth_supervision_lambda,
         m_nerf.training.indice_image_for_tracking_pose,
+		nullptr,
         xy_image_pixel_indices,
         ground_truth_rgbd_gpu.data(),
         reconstructed_rgbd_gpu.data()
@@ -1912,7 +2046,7 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 			m_nerf.training.image_photometric_correction_params_intercept_gpu.data(),
         	ground_truth_rgbd_gpu.data(),
 			partial_derivatives.back().data(),
-			m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(), 
+			m_nerf.training.image_photometric_correction_gradient_coef_gpu.data(),
 			m_nerf.training.image_photometric_correction_gradient_intercept_gpu.data()
 		);
 	}
@@ -2012,6 +2146,7 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 		m_distortion.resolution,
 		m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
         m_nerf.training.indice_image_for_tracking_pose,
+		nullptr,
         xy_image_pixel_indices,
         ray_stride,
 	    super_ray_gradients
@@ -2033,6 +2168,734 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_s
 	m_rng.advance();
 
 }
+
+
+float Testbed::get_nerf_model_learning_rate(){
+	json hyperparams = m_trainer->hyperparams();
+	json tmp_params = hyperparams.value("optimizer", json::object());
+
+	while (tmp_params.contains("nested")){
+		tmp_params = tmp_params.value("nested", json::object());
+	}
+
+	float learning_rate = -1.f;
+	if (tmp_params.contains("learning_rate")) {
+		learning_rate = tmp_params["learning_rate"];
+	}
+	return learning_rate;
+}
+
+
+
+void Testbed::set_nerf_model_learning_rate(const json& params){
+	// params should be a json dict with the following shape:
+	// params = {"optimizer": {"learning_rate"=new_lr}}
+	m_trainer->update_hyperparams(params);
+}
+
+
+
+
+void Testbed::bundle_adjustment_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream, bool motion_only) {
+
+	if (m_nerf.training.n_images_for_training_slam == 0) {
+		return;
+	}
+
+    m_nerf.training.counters_rgb_ba.rays_per_batch = m_nerf.training.rays_per_tracking_batch;
+	m_nerf.training.counters_rgb_ba.prepare_for_training_steps(stream);
+
+	if (m_nerf.training.n_steps_since_cam_update_ba == 0) {
+	    CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_pos_gradient_gpu.data(), 0, m_nerf.training.cam_pos_gradient_gpu.get_bytes(), stream));
+	    CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_rot_gradient_gpu.data(), 0, m_nerf.training.cam_rot_gradient_gpu.get_bytes(), stream));
+    }
+
+	float* envmap_gradient = m_nerf.training.train_envmap ? m_envmap.envmap->gradients() : nullptr;
+	if (envmap_gradient) {
+		CUDA_CHECK_THROW(cudaMemsetAsync(envmap_gradient, 0, sizeof(float)*m_envmap.envmap->n_params(), stream));
+	}
+
+	bundle_adjustment_gaussian_pyramid_nerf_slam_step(target_batch_size, m_nerf.training.counters_rgb_ba, stream, motion_only);
+
+	m_nerf.training.n_steps_since_map_update_ba += 1;
+	if (~motion_only) {
+		if (m_nerf.training.n_steps_since_map_update_ba >= m_nerf.training.n_steps_between_map_updates_ba) {
+			m_trainer->optimizer_step(stream, LOSS_SCALE);
+			if (envmap_gradient) {
+				m_envmap.trainer->optimizer_step(stream, LOSS_SCALE);
+			}
+        	m_nerf.training.n_steps_since_map_update_ba = 0;
+		}
+	}
+
+	++m_training_step_ba;
+
+    std::vector<float> losses_scalar = m_nerf.training.counters_rgb_ba.update_after_training(target_batch_size, get_loss_scalar, stream, true, true);
+    float loss_scalar = losses_scalar[0];
+    float loss_depth_scalar = losses_scalar[1];
+	bool zero_records = m_nerf.training.counters_rgb_ba.measured_batch_size == 0;
+	if (get_loss_scalar) {
+        m_ba_loss = loss_scalar;
+        m_ba_loss_depth = loss_depth_scalar;
+		m_loss_scalar_ba.update(loss_scalar);
+	}
+
+	if (zero_records) {
+		m_loss_scalar_ba.set(0.f);
+		tlog::warning() << "Nerf training generated 0 samples. Aborting training.";
+		m_train = false;
+	}
+
+	m_nerf.training.n_steps_since_cam_update_ba += 1;
+
+	// Get extrinsics gradients
+
+	if (m_nerf.training.n_steps_since_cam_update_ba >= m_nerf.training.n_steps_between_cam_updates_ba) {
+
+		float per_camera_loss_scale = 1.0 / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates_ba;
+
+		{
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
+
+			//TODO: only step if enough grad was accumulated
+			//TODO: set better scheduler
+			//TODO: subsample frames covisible
+
+			// Optimization step
+            // for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+		    for (uint32_t k = 0; k < m_nerf.training.idx_images_for_training_slam_pose.size(); ++k) {
+                uint32_t i = m_nerf.training.idx_images_for_training_slam_pose[k];
+				//NOTE: prevent modifying pose of first image
+				//NOTE: For BA we also want to sample rays in first image for mapping
+				if (i>0) {
+
+					//if (m_nerf.training.ray_counter_per_image[i] > 200) {
+					{
+						Vector3f pos_gradient = m_nerf.training.cam_pos_gradient[i] * per_camera_loss_scale;
+						Vector3f rot_gradient = m_nerf.training.cam_rot_gradient[i] * per_camera_loss_scale;
+
+						float l2_reg = m_nerf.training.extrinsic_l2_reg;
+						pos_gradient += m_nerf.training.cam_pos_offset[i].variable() * l2_reg;
+						rot_gradient += m_nerf.training.cam_rot_offset[i].variable() * l2_reg;
+
+						m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_pos * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+						m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_rot * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+						// m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_pos);
+						// m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_rot);
+
+
+						m_nerf.training.cam_pos_offset[i].step(pos_gradient);
+						m_nerf.training.cam_rot_offset[i].step(rot_gradient);
+
+    	            	m_nerf.training.update_transforms(i, i+1);
+
+						m_nerf.training.ray_counter_per_image[i] = 0;
+						m_nerf.training.cam_pos_gradient[i] = Vector3f::Zero(3);
+						m_nerf.training.cam_rot_gradient[i] = Vector3f::Zero(3);
+					}
+				}
+			}
+
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
+
+		}
+
+        m_nerf.training.n_steps_since_cam_update_ba = 0;
+	}
+
+}
+
+
+
+void Testbed::bundle_adjustment_gaussian_pyramid_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream, const bool motion_only) {
+	const uint32_t padded_output_width = m_network->padded_output_width();
+	const uint32_t max_samples = target_batch_size * 16; // Somewhat of a worst case
+	const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
+	const uint32_t extra_stride = m_nerf_network->n_extra_dims() * sizeof(float); // extra stride on top of base NerfCoordinate struct
+
+    //NOTE: get settings/hyperparams for tracking
+    const uint32_t kernel_window_size = 5;
+    const uint32_t gaussian_pyramid_level = m_tracking_gaussian_pyramid_level;
+    const uint32_t sample_away_from_border_margin_h = m_sample_away_from_border_margin_h;
+    const uint32_t sample_away_from_border_margin_w = m_sample_away_from_border_margin_w;
+
+    //NOTE: get downsized image dimensions
+	//NOTE: assume ALL images have same resolution
+	Vector2i resolution = m_nerf.training.dataset.metadata[m_nerf.training.idx_images_for_training_slam_pose[0]].resolution;
+    Vector2i resolution_at_level = (resolution.cast<float>() / pow(2.0, (float) gaussian_pyramid_level)).cast<int>();
+
+    //NOTE: get receptive field at level L
+    std::vector<int> receptive_field;
+    get_receptive_field_of_gaussian_pyramid_at_level(gaussian_pyramid_level, receptive_field);
+
+    const uint32_t super_ray_window_size = receptive_field[1] * 2 + 1;
+    const uint32_t ray_stride = super_ray_window_size * super_ray_window_size;
+    uint32_t n_super_rays=0;
+    uint32_t n_total_rays=0; // get all rays needed to compute super rays values (pixels at level)
+    uint32_t n_total_rays_for_gradient=0; //  subset of unique rays.
+    std::vector<float> xy_image_pixel_indices_cpu;
+    std::vector<uint32_t> xy_image_super_pixel_at_level_indices_int_cpu;
+    std::vector<uint32_t> xy_image_pixel_indices_int_cpu;
+    std::vector<uint32_t> existing_ray_mapping;
+    std::vector<uint32_t> image_ids;
+    sample_pixels_for_ba_with_gaussian_pyramid(
+        counters.rays_per_batch,
+        n_total_rays,
+        n_super_rays,
+        n_total_rays_for_gradient,
+        xy_image_pixel_indices_cpu,
+        xy_image_pixel_indices_int_cpu,
+        xy_image_super_pixel_at_level_indices_int_cpu,
+        existing_ray_mapping,
+		m_nerf.training.snap_to_pixel_centers,
+        sample_away_from_border_margin_h,
+        sample_away_from_border_margin_w,
+        m_rng,
+        receptive_field,
+        super_ray_window_size,
+        ray_stride,
+	    resolution,
+        resolution_at_level,
+        gaussian_pyramid_level,
+		m_nerf.training.idx_images_for_training_slam_pose,
+		image_ids
+    );
+
+	//DEBUG
+	//DEBUG
+	m_nerf.training.xy_image_super_pixel_at_level_indices_int_cpu = xy_image_super_pixel_at_level_indices_int_cpu;
+	m_nerf.training.xy_image_pixel_indices_int_cpu = xy_image_pixel_indices_int_cpu;
+	m_nerf.training.image_ids = image_ids;
+
+	GPUMemoryArena::Allocation alloc;
+	auto scratch = allocate_workspace_and_distribute<
+		uint32_t, // ray_indices
+		Ray, // rays
+		uint32_t, // numsteps
+		float, // coords
+		float, // max_level
+		network_precision_t, // mlp_out
+		network_precision_t, // dloss_dmlp_out
+		float, // coords_compacted
+		float, // coords_gradient
+		float, // max_level_compacted
+		uint32_t, // ray_counter
+		float, // xy_pixel_indices
+		int32_t, // mapping_indices
+		uint32_t, // numsteps_compacted
+		uint32_t, // num super rays counter
+		uint32_t, // num super rays counter depth
+		uint32_t, // mapping of existing rays
+		float,  // super ray gradients
+		uint32_t // image ids of sampled rays
+	>(
+		stream, &alloc,
+		n_total_rays_for_gradient,
+		n_total_rays_for_gradient,
+		n_total_rays_for_gradient * 2,
+		max_samples * floats_per_coord,
+		max_samples,
+		std::max(target_batch_size, max_samples) * padded_output_width,
+		target_batch_size * padded_output_width,
+		target_batch_size * floats_per_coord,
+		target_batch_size * floats_per_coord,
+		target_batch_size,
+		1,
+		n_total_rays * 2,
+		n_total_rays, // 12
+		n_total_rays_for_gradient * 2,
+        1,
+        1,
+		n_total_rays,
+		n_super_rays * 6,
+		n_total_rays
+	);
+
+	// NOTE: C++17 structured binding
+	uint32_t* ray_indices = std::get<0>(scratch);
+	Ray* rays_unnormalized = std::get<1>(scratch);
+	uint32_t* numsteps = std::get<2>(scratch);
+	float* coords = std::get<3>(scratch);
+	float* max_level = std::get<4>(scratch);
+	network_precision_t* mlp_out = std::get<5>(scratch);
+	network_precision_t* dloss_dmlp_out = std::get<6>(scratch);
+	float* coords_compacted = std::get<7>(scratch);
+	float* coords_gradient = std::get<8>(scratch);
+	float* max_level_compacted = std::get<9>(scratch);
+	uint32_t* ray_counter = std::get<10>(scratch);
+	float* xy_image_pixel_indices = std::get<11>(scratch);
+	int32_t* mapping_indices = std::get<12>(scratch);
+	uint32_t* numsteps_compacted = std::get<13>(scratch);
+	uint32_t* super_ray_counter = std::get<14>(scratch);
+	uint32_t* super_ray_counter_depth = std::get<15>(scratch);
+    uint32_t* existing_ray_mapping_gpu = std::get<16>(scratch);
+	float* super_ray_gradients = std::get<17>(scratch);
+    uint32_t* image_ids_gpu = std::get<18>(scratch);
+
+	uint32_t max_inference = next_multiple(std::min(n_total_rays_for_gradient * 1024, max_samples), tcnn::batch_size_granularity);
+    counters.measured_batch_size_before_compaction = max_inference;
+
+	GPUMatrix<float> coords_matrix((float*)coords, floats_per_coord, max_inference);
+	GPUMatrix<network_precision_t> rgbsigma_matrix(mlp_out, padded_output_width, max_inference);
+
+	GPUMatrix<float> compacted_coords_matrix((float*)coords_compacted, floats_per_coord, target_batch_size);
+	GPUMatrix<network_precision_t> compacted_rgbsigma_matrix(mlp_out, padded_output_width, target_batch_size);
+
+	GPUMatrix<network_precision_t> gradient_matrix(dloss_dmlp_out, padded_output_width, target_batch_size);
+
+	if (m_training_step_track == 0) {
+		counters.n_rays_total = 0;
+	}
+
+	counters.n_rays_total += n_total_rays;
+
+	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter, 0, sizeof(uint32_t), stream));
+	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter, 0, sizeof(uint32_t), stream));
+	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter_depth, 0, sizeof(uint32_t), stream));
+	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_gradients, 0, n_super_rays * 6 * sizeof(uint32_t), stream));
+
+    // create 5-tap kernel
+    // TODO: move that outside of tracking loop
+    // make kernel __constant__ global var
+    // see http://alexminnaar.com/2019/07/12/implementing-convolutions-in-cuda.html
+    std::vector<float> kernel = make_5tap_kernel();
+    tcnn::GPUMemory<float> kernel_gpu;
+    kernel_gpu.enlarge(kernel_window_size * kernel_window_size);
+    CUDA_CHECK_THROW(
+       cudaMemcpy(
+          kernel_gpu.data(),
+          kernel.data(),
+          kernel_window_size * kernel_window_size * sizeof(float),
+          cudaMemcpyHostToDevice
+       )
+    );
+
+    //NOTE: ship to Device sampled pixels
+    CUDA_CHECK_THROW(
+       cudaMemcpy(
+          std::get<11>(scratch),
+          xy_image_pixel_indices_cpu.data(),
+          n_total_rays * 2 * sizeof(float),
+          cudaMemcpyHostToDevice
+       )
+    );
+    CUDA_CHECK_THROW(
+       cudaMemcpy(
+          std::get<16>(scratch),
+          existing_ray_mapping.data(),
+          n_total_rays * sizeof(uint32_t),
+          cudaMemcpyHostToDevice
+       )
+    );
+    CUDA_CHECK_THROW(
+       cudaMemcpy(
+          std::get<18>(scratch),
+          image_ids.data(),
+          n_total_rays * sizeof(uint32_t),
+          cudaMemcpyHostToDevice
+       )
+    );
+
+
+
+    //NOTE: get sample along each rays
+	linear_kernel(generate_training_samples_for_tracking_gp, 0, stream,
+        n_total_rays,
+		m_aabb,
+		max_inference,
+		m_rng,
+		ray_counter,
+		counters.numsteps_counter.data(),
+		ray_indices,
+		rays_unnormalized,
+		numsteps,
+		PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
+        m_nerf.training.dataset.metadata_gpu.data(),
+		m_nerf.training.transforms_gpu.data(),
+		m_nerf.density_grid_bitfield.data(),
+		m_nerf.cone_angle_constant,
+		m_distortion.map->params(),
+		m_distortion.resolution,
+		m_nerf.training.extra_dims_gpu.data(),
+		m_nerf_network->n_extra_dims(),
+        m_nerf.training.indice_image_for_tracking_pose,
+		image_ids_gpu,
+		mapping_indices,
+        existing_ray_mapping_gpu,
+        xy_image_pixel_indices,
+		m_nerf.training.use_view_dir_in_nerf
+	);
+
+	CUDA_CHECK_THROW(
+       cudaMemcpyAsync(
+          &m_track_pose_nerf_num_rays_in_tracking_step,
+          std::get<10>(scratch),
+          sizeof(uint32_t),
+          cudaMemcpyDeviceToHost,
+          stream
+       )
+    );
+
+    if (m_track_pose_nerf_num_rays_in_tracking_step != n_total_rays_for_gradient) {
+        tlog::warning()<<" -- BA: num rays for gradient is different than the required num of rays: "<<m_track_pose_nerf_num_rays_in_tracking_step<< " != "<< n_total_rays_for_gradient << ". Consider increasing batch_size";
+    }
+
+    //NOTE: get network values for each points
+	m_network->inference_mixed_precision(stream, coords_matrix, rgbsigma_matrix, false);
+
+
+    tcnn::GPUMemory<float> reconstructed_rgbd_gpu;
+    tcnn::GPUMemory<float> ground_truth_rgbd_gpu;
+    reconstructed_rgbd_gpu.enlarge(n_total_rays_for_gradient * 4);
+    ground_truth_rgbd_gpu.enlarge(n_total_rays_for_gradient * 4);
+
+    //NOTE: get RGBD values prediciton + GT.
+	linear_kernel(compute_GT_and_reconstructed_rgbd_gp, 0, stream,
+        n_total_rays_for_gradient,
+		m_aabb,
+		m_rng,
+		target_batch_size,
+		ray_counter,
+		padded_output_width,
+		m_envmap.envmap->params(),
+		m_envmap.resolution,
+		m_background_color.head<3>(),
+		m_color_space,
+		m_nerf.training.random_bg_color,
+		m_nerf.training.linear_colors,
+		m_nerf.training.dataset.metadata_gpu.data(),
+		mlp_out,
+		counters.numsteps_counter_compacted.data(),
+		ray_indices,
+		rays_unnormalized,
+		numsteps,
+		numsteps_compacted,
+		PitchedPtr<const NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
+		PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1 ,0, extra_stride),
+		m_nerf.rgb_activation,
+		m_nerf.density_activation,
+		m_nerf.density_grid.data(),
+		m_nerf.density_grid_mean.data(),
+		m_nerf.training.cam_exposure_gpu.data(),
+		m_nerf.training.depth_supervision_lambda,
+        m_nerf.training.indice_image_for_tracking_pose,
+		image_ids_gpu,
+        xy_image_pixel_indices,
+        ground_truth_rgbd_gpu.data(),
+        reconstructed_rgbd_gpu.data()
+	);
+
+	//NOTE: get Depth reconstruction variance (ie confidence)
+    tcnn::GPUMemory<float> reconstructed_depth_var_gpu;
+    tcnn::GPUMemory<float> reconstructed_color_var_gpu;
+    if (m_tracking_use_depth_var_in_loss) {
+        reconstructed_depth_var_gpu.enlarge(n_total_rays_for_gradient);
+        reconstructed_color_var_gpu.enlarge(n_total_rays_for_gradient);
+	    linear_kernel(compute_depth_variance_gp, 0, stream,
+            n_total_rays_for_gradient,
+	    	m_aabb,
+	    	ray_counter,
+	    	padded_output_width,
+	    	mlp_out,
+	    	rays_unnormalized,
+	    	numsteps,
+	    	PitchedPtr<const NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
+		    m_nerf.rgb_activation,
+	    	m_nerf.density_activation,
+            reconstructed_rgbd_gpu.data(),
+            reconstructed_depth_var_gpu.data(),
+            reconstructed_color_var_gpu.data()
+	    );
+        m_tracking_reconstructed_depth_var.resize(n_total_rays_for_gradient);
+        reconstructed_depth_var_gpu.copy_to_host(m_tracking_reconstructed_depth_var.data(), n_total_rays_for_gradient);
+        m_tracking_reconstructed_color_var.resize(n_total_rays_for_gradient);
+        reconstructed_color_var_gpu.copy_to_host(m_tracking_reconstructed_color_var.data(), n_total_rays_for_gradient);
+    }
+
+
+    //NOTE: compute Gaussian pyramids (ie convs)
+    std::vector<tcnn::GPUMemory<float> > ground_truth_rgbd_tensors;
+    std::vector<tcnn::GPUMemory<float> > reconstructed_rgbd_tensors;
+    std::vector<tcnn::GPUMemory<float> > reconstructed_depth_var_tensors;
+    std::vector<tcnn::GPUMemory<float> > reconstructed_color_var_tensors;
+    std::vector<tcnn::GPUMemory<float> > gradients_tensors;
+    std::vector<uint32_t> dimensions;
+
+    uint32_t cur_super_ray_window_size = super_ray_window_size;
+    uint32_t cur_ray_stride = ray_stride;
+    uint32_t cur_dim = n_total_rays;
+
+    ground_truth_rgbd_tensors.push_back(ground_truth_rgbd_gpu);
+    reconstructed_rgbd_tensors.push_back(reconstructed_rgbd_gpu);
+    dimensions.push_back(cur_dim);
+    if (m_tracking_use_depth_var_in_loss) {
+        reconstructed_depth_var_tensors.push_back(reconstructed_depth_var_gpu);
+        reconstructed_color_var_tensors.push_back(reconstructed_color_var_gpu);
+    }
+
+    for (size_t l=0; l<gaussian_pyramid_level; ++l) {
+
+        std::vector<int> tmp_receptive_field;
+        get_receptive_field_of_gaussian_pyramid_at_level(gaussian_pyramid_level-l-1, tmp_receptive_field);
+        uint32_t tmp_super_ray_window_size = tmp_receptive_field[1] * 2 + 1;
+        uint32_t tmp_ray_stride = tmp_super_ray_window_size * tmp_super_ray_window_size;
+        uint32_t tmp_dim = n_super_rays * tmp_ray_stride;
+
+        tcnn::GPUMemory<float> new_gt_rgbd;
+        tcnn::GPUMemory<float> new_rec_rgbd;
+        tcnn::GPUMemory<float> gradients;
+
+        new_gt_rgbd.enlarge(tmp_dim*4);
+        new_rec_rgbd.enlarge(tmp_dim*4);
+        gradients.enlarge(tmp_dim * cur_dim); // L1 x L2 matrix
+        gradients.memset(0);
+
+        tcnn::GPUMemory<float> new_rec_depth_var;
+        tcnn::GPUMemory<float> new_rec_color_var;
+        if (m_tracking_use_depth_var_in_loss) {
+            new_rec_depth_var.enlarge(tmp_dim);
+            new_rec_color_var.enlarge(tmp_dim);
+        }
+
+	    linear_kernel(convolution_gaussian_pyramid, 0, stream,
+            tmp_dim,
+            cur_dim,
+            cur_super_ray_window_size,
+            tmp_super_ray_window_size,
+            cur_ray_stride,
+            tmp_ray_stride,
+            kernel_gpu.data(),
+            l==0 ? existing_ray_mapping_gpu : nullptr,
+            l==0 ? mapping_indices : nullptr,
+            ground_truth_rgbd_tensors.back().data(),
+            reconstructed_rgbd_tensors.back().data(),
+            m_tracking_use_depth_var_in_loss ? reconstructed_depth_var_tensors.back().data() : nullptr,
+            m_tracking_use_depth_var_in_loss ? reconstructed_color_var_tensors.back().data() : nullptr,
+            m_tracking_use_depth_var_in_loss ? new_rec_depth_var.data() : nullptr,
+            m_tracking_use_depth_var_in_loss ? new_rec_color_var.data() : nullptr,
+            new_gt_rgbd.data(),
+            new_rec_rgbd.data(),
+            gradients.data()
+	    );
+
+        ground_truth_rgbd_tensors.push_back(new_gt_rgbd);
+        reconstructed_rgbd_tensors.push_back(new_rec_rgbd);
+        gradients_tensors.push_back(gradients);
+        dimensions.push_back(tmp_dim);
+
+        if (m_tracking_use_depth_var_in_loss) {
+            reconstructed_depth_var_tensors.push_back(new_rec_depth_var);
+            reconstructed_color_var_tensors.push_back(new_rec_color_var);
+        }
+
+        cur_super_ray_window_size = tmp_super_ray_window_size;
+        cur_ray_stride = tmp_ray_stride;
+        cur_dim = tmp_dim;
+
+    }
+
+    if (m_tracking_use_depth_var_in_loss) {
+        if (gaussian_pyramid_level>0) {
+            m_tracking_reconstructed_depth_var_at_level.resize(n_super_rays);
+            m_tracking_reconstructed_color_var_at_level.resize(n_super_rays);
+            reconstructed_depth_var_tensors.back().copy_to_host(m_tracking_reconstructed_depth_var_at_level.data(), n_super_rays);
+            reconstructed_color_var_tensors.back().copy_to_host(m_tracking_reconstructed_color_var_at_level.data(), n_super_rays);
+        } else {
+            m_tracking_reconstructed_depth_var_at_level.resize(n_total_rays_for_gradient);
+            m_tracking_reconstructed_color_var_at_level.resize(n_total_rays_for_gradient);
+            reconstructed_depth_var_tensors.back().copy_to_host(m_tracking_reconstructed_depth_var_at_level.data(), n_total_rays_for_gradient);
+            reconstructed_color_var_tensors.back().copy_to_host(m_tracking_reconstructed_color_var_at_level.data(), n_total_rays_for_gradient);
+        }
+    }
+
+
+    tcnn::GPUMemory<float> dL_dB;
+    dL_dB.enlarge(n_super_rays * 4);
+
+	//DEBUG
+    std::vector<float> reconstructed_rgbd_cpu;
+	reconstructed_rgbd_cpu.resize(ground_truth_rgbd_tensors.back().size());
+	CUDA_CHECK_THROW(
+       cudaMemcpyAsync(
+          reconstructed_rgbd_cpu.data(),
+		  ground_truth_rgbd_tensors.back().data(),
+          ground_truth_rgbd_tensors.back().bytes(),
+          cudaMemcpyDeviceToHost,
+          stream
+       )
+    );
+	m_nerf.training.reconstructed_rgbd_cpu = reconstructed_rgbd_cpu;
+
+
+    //NOTE: compute loss.
+	linear_kernel(compute_loss_gp, 0, stream,
+		n_super_rays,
+		m_nerf.training.track_loss_type,
+		m_nerf.training.track_depth_loss_type,
+		counters.loss.data(),
+		counters.loss_depth.data(),
+        m_tracking_use_depth_var_in_loss,
+		m_tracking_use_color_var_in_loss,
+        gaussian_pyramid_level==0 ? existing_ray_mapping_gpu : nullptr,
+        gaussian_pyramid_level==0 ? mapping_indices : nullptr,
+        ground_truth_rgbd_tensors.back().data(),
+        reconstructed_rgbd_tensors.back().data(),
+        m_tracking_use_depth_var_in_loss ? reconstructed_depth_var_tensors.back().data(): nullptr,
+        m_tracking_use_depth_var_in_loss ? reconstructed_color_var_tensors.back().data(): nullptr,
+        dL_dB.data(),
+		super_ray_counter,
+		super_ray_counter_depth
+	);
+
+    // NOTE: store Losses on host
+    counters.loss_cpu.resize(n_super_rays);
+    counters.loss_depth_cpu.resize(n_super_rays);
+    counters.loss.copy_to_host(counters.loss_cpu.data(), n_super_rays);
+    counters.loss_depth.copy_to_host(counters.loss_depth_cpu.data(), n_super_rays);
+
+    //NOTE: Backprop thru convs
+    std::vector<tcnn::GPUMemory<float> > partial_derivatives;
+    partial_derivatives.push_back(dL_dB);
+
+    for (size_t l=0; l<gaussian_pyramid_level; ++l) {
+
+        uint32_t cur_dim = dimensions.back();
+        dimensions.pop_back();
+        uint32_t tmp_dim = dimensions.back();
+
+        tcnn::GPUMemory<float> tmp_dL_dB;
+        tmp_dL_dB.enlarge(tmp_dim * 4);
+
+        linear_kernel(backprop_thru_convs, 0, stream,
+            tmp_dim,
+            cur_dim,
+            partial_derivatives.back().data(),
+            gradients_tensors.back().data(),
+            tmp_dL_dB.data()
+        );
+
+        partial_derivatives.push_back(tmp_dL_dB);
+        gradients_tensors.pop_back();
+    }
+
+
+	CUDA_CHECK_THROW(
+       cudaMemcpyAsync(
+          &counters.super_rays_counter,
+          std::get<14>(scratch),
+          sizeof(uint32_t),
+          cudaMemcpyDeviceToHost,
+          stream
+       )
+    );
+
+	CUDA_CHECK_THROW(
+       cudaMemcpyAsync(
+          &counters.super_rays_counter_depth,
+          std::get<15>(scratch),
+          sizeof(uint32_t),
+          cudaMemcpyDeviceToHost,
+          stream
+       )
+    );
+
+    //NOTE: compute loss and gradients.
+	linear_kernel(compute_gradient_gp, 0, stream,
+        n_total_rays,
+		m_aabb,
+		LOSS_SCALE,
+		padded_output_width,
+		m_nerf.training.dataset.metadata_gpu.data(),
+		mlp_out,
+		ray_indices,
+		rays_unnormalized,
+		numsteps,
+        numsteps_compacted,
+		PitchedPtr<const NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
+		PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1 ,0, extra_stride),
+		dloss_dmlp_out,
+		m_nerf.training.track_loss_type,
+		m_nerf.training.track_depth_loss_type,
+		counters.loss.data(),
+		counters.loss_depth.data(),
+		m_nerf.rgb_activation,
+		m_nerf.density_activation,
+		m_nerf.density_grid.data(),
+		m_nerf.density_grid_mean.data(),
+		m_nerf.training.depth_supervision_lambda,
+		m_nerf.training.near_distance,
+        xy_image_pixel_indices,
+		mapping_indices,
+        ground_truth_rgbd_gpu.data(),
+        reconstructed_rgbd_gpu.data(),
+		ray_counter,
+        existing_ray_mapping_gpu,
+        partial_derivatives.back().data(),
+		super_ray_counter,
+		super_ray_counter_depth
+	);
+
+	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
+		target_batch_size, padded_output_width, counters.numsteps_counter_compacted.data(), dloss_dmlp_out
+	);
+	fill_rollover<float><<<n_blocks_linear(target_batch_size * floats_per_coord), n_threads_linear, 0, stream>>>(
+		target_batch_size, floats_per_coord, counters.numsteps_counter_compacted.data(), (float*)coords_compacted
+	);
+	fill_rollover<float><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
+		target_batch_size, 1, counters.numsteps_counter_compacted.data(), max_level_compacted
+	);
+
+	bool train_camera = true;
+	bool prepare_input_gradients = train_camera;
+	GPUMatrix<float> coords_gradient_matrix((float*)coords_gradient, floats_per_coord, target_batch_size);
+
+	{
+		auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, prepare_input_gradients);
+		if (motion_only) {
+			m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
+		} else {
+			m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
+		}
+	}
+
+	// Compute camera gradients
+	linear_kernel(compute_camera_gradient_gp, 0, stream,
+		counters.rays_per_batch,
+		m_aabb,
+		ray_counter,
+		m_nerf.training.transforms_gpu.data(),
+		m_nerf.training.cam_pos_gradient_gpu.data(),
+		m_nerf.training.cam_rot_gradient_gpu.data(),
+		m_nerf.training.dataset.metadata_gpu.data(),
+		ray_indices,
+		rays_unnormalized,
+		numsteps_compacted,
+		PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1, 0, extra_stride),
+		PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_gradient, 1, 0, extra_stride),
+		m_nerf.training.optimize_distortion ? m_distortion.map->gradients() : nullptr,
+		m_nerf.training.optimize_distortion ? m_distortion.map->gradient_weights() : nullptr,
+		m_distortion.resolution,
+		m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
+        m_nerf.training.indice_image_for_tracking_pose,
+		image_ids_gpu,
+        xy_image_pixel_indices,
+        ray_stride,
+	    super_ray_gradients
+	);
+
+	m_rng.advance();
+
+}
+
+
+
+
+
+
+
 
 
 NGP_NAMESPACE_END

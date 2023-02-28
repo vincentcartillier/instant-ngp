@@ -2997,6 +2997,9 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 		m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.resize(n_images);
 		m_nerf.training.image_photometric_correction_gradient_ray_count_gpu.memset(0);
 	}
+
+	// BA arrays
+	m_nerf.training.ray_counter_per_image.resize(n_images, 0.f);
 }
 
 void Testbed::expand_training_data(size_t n_additional_images) {
