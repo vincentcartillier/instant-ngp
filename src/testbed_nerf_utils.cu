@@ -58,8 +58,8 @@ static constexpr float UNIFORM_SAMPLING_FRACTION = 0.5f;
 
 
 struct LossAndGradient {
-	Eigen::Array3f loss;
-	Eigen::Array3f gradient;
+	vec3 loss;
+	vec3 gradient;
 
 	__host__ __device__ LossAndGradient operator*(float scalar) {
 		return {loss * scalar, gradient * scalar};
@@ -120,7 +120,7 @@ inline __device__ Vector2f nerf_random_image_pos_training(default_rng_t& rng, co
 
 
 inline __host__ __device__ uint32_t grid_mip_offset(uint32_t mip) {
-	return (NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE()) * mip;
+	return NERF_GRID_N_CELLS() * mip;
 }
 
 inline __host__ __device__ float calc_cone_angle(float cosine, const Eigen::Vector2f& focal_length, float cone_angle_constant) {
@@ -132,111 +132,177 @@ inline __host__ __device__ float calc_cone_angle(float cosine, const Eigen::Vect
 	return cone_angle_constant;
 }
 
-inline __host__ __device__ float calc_dt(float t, float cone_angle) {
-	return tcnn::clamp(t*cone_angle, MIN_CONE_STEPSIZE(), MAX_CONE_STEPSIZE());
+inline __host__ __device__ float to_stepping_space(float t, float cone_angle) {
+	if (cone_angle <= 1e-5f) {
+		return t / MIN_CONE_STEPSIZE();
+	}
+
+	float log1p_c = logf(1.0f + cone_angle);
+
+	float a = (logf(MIN_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
+	float b = (logf(MAX_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
+
+	float at = expf(a * log1p_c);
+	float bt = expf(b * log1p_c);
+
+	if (t <= at) {
+		return (t - at) / MIN_CONE_STEPSIZE() + a;
+	} else if (t <= bt) {
+		return logf(t) / log1p_c;
+	} else {
+		return (t - bt) / MAX_CONE_STEPSIZE() + b;
+	}
 }
 
-inline __device__ Array3f copysign(const Array3f& a, const Array3f& b) {
+inline __host__ __device__ float from_stepping_space(float n, float cone_angle) {
+	if (cone_angle <= 1e-5f) {
+		return n * MIN_CONE_STEPSIZE();
+	}
+
+	float log1p_c = logf(1.0f + cone_angle);
+
+	float a = (logf(MIN_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
+	float b = (logf(MAX_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
+
+	float at = expf(a * log1p_c);
+	float bt = expf(b * log1p_c);
+
+	if (n <= a) {
+		return (n - a) * MIN_CONE_STEPSIZE() + at;
+	} else if (n <= b) {
+		return expf(n * log1p_c);
+	} else {
+		return (n - b) * MAX_CONE_STEPSIZE() + bt;
+	}
+}
+
+
+
+inline __host__ __device__ float advance_n_steps(float t, float cone_angle, float n) {
+	return from_stepping_space(to_stepping_space(t, cone_angle) + n, cone_angle);
+}
+
+
+inline __host__ __device__ float calc_dt(float t, float cone_angle) {
+	return advance_n_steps(t, cone_angle, 1.0f) - t;
+}
+
+inline __device__ vec3 copysign(const vec3& a, const vec3& b) {
 	return {
-		copysignf(a.x(), b.x()),
-		copysignf(a.y(), b.y()),
-		copysignf(a.z(), b.z()),
+		copysignf(a.x, b.x),
+		copysignf(a.y, b.y),
+		copysignf(a.z, b.z),
 	};
 }
 
-inline __device__ LossAndGradient l2_loss(const Array3f& target, const Array3f& prediction) {
-	Array3f difference = prediction - target;
+inline __device__ LossAndGradient l2_loss(const vec3& target, const vec3& prediction) {
+	vec3 difference = prediction - target;
 	return {
 		difference * difference,
 		2.0f * difference
 	};
 }
 
-inline __device__ LossAndGradient relative_l2_loss(const Array3f& target, const Array3f& prediction) {
-	Array3f difference = prediction - target;
-	Array3f factor = (prediction * prediction + Array3f::Constant(1e-2f)).inverse();
+
+
+inline __device__ LossAndGradient relative_l2_loss(const vec3& target, const vec3& prediction) {
+	vec3 difference = prediction - target;
+	vec3 denom = prediction * prediction + vec3(1e-2f);
 	return {
-		difference * difference * factor,
-		2.0f * difference * factor
+		difference * difference / denom,
+		2.0f * difference / denom
 	};
 }
 
-inline __device__ LossAndGradient l1_loss(const Array3f& target, const Array3f& prediction) {
-	Array3f difference = prediction - target;
+
+inline __device__ LossAndGradient l1_loss(const vec3& target, const vec3& prediction) {
+	vec3 difference = prediction - target;
 	return {
-		difference.abs(),
-		copysign(Array3f::Ones(), difference),
+		abs(difference),
+		copysign(vec3(1.0f), difference),
 	};
 }
 
-inline __device__ LossAndGradient huber_loss(const Array3f& target, const Array3f& prediction, float alpha = 1) {
-	Array3f difference = prediction - target;
-	Array3f abs_diff = difference.abs();
-	Array3f square = 0.5f/alpha * difference * difference;
+
+inline __device__ LossAndGradient huber_loss(const vec3& target, const vec3& prediction, float alpha = 1) {
+	vec3 difference = prediction - target;
+	vec3 abs_diff = abs(difference);
+	vec3 square = 0.5f/alpha * difference * difference;
 	return {
 		{
-			abs_diff.x() > alpha ? (abs_diff.x() - 0.5f * alpha) : square.x(),
-			abs_diff.y() > alpha ? (abs_diff.y() - 0.5f * alpha) : square.y(),
-			abs_diff.z() > alpha ? (abs_diff.z() - 0.5f * alpha) : square.z(),
+			abs_diff.x > alpha ? (abs_diff.x - 0.5f * alpha) : square.x,
+			abs_diff.y > alpha ? (abs_diff.y - 0.5f * alpha) : square.y,
+			abs_diff.z > alpha ? (abs_diff.z - 0.5f * alpha) : square.z,
 		},
 		{
-			abs_diff.x() > alpha ? (difference.x() > 0 ? 1.0f : -1.0f) : (difference.x() / alpha),
-			abs_diff.y() > alpha ? (difference.y() > 0 ? 1.0f : -1.0f) : (difference.y() / alpha),
-			abs_diff.z() > alpha ? (difference.z() > 0 ? 1.0f : -1.0f) : (difference.z() / alpha),
+			abs_diff.x > alpha ? (difference.x > 0 ? 1.0f : -1.0f) : (difference.x / alpha),
+			abs_diff.y > alpha ? (difference.y > 0 ? 1.0f : -1.0f) : (difference.y / alpha),
+			abs_diff.z > alpha ? (difference.z > 0 ? 1.0f : -1.0f) : (difference.z / alpha),
 		},
 	};
 }
 
-inline __device__ LossAndGradient log_l1_loss(const Array3f& target, const Array3f& prediction) {
-	Array3f difference = prediction - target;
-	Array3f divisor = difference.abs() + Array3f::Ones();
+
+
+
+
+
+
+
+inline __device__ LossAndGradient log_l1_loss(const vec3& target, const vec3& prediction) {
+	vec3 difference = prediction - target;
+	vec3 divisor = abs(difference) + vec3(1.0f);
 	return {
-		divisor.log(),
-		copysign(divisor.inverse(), difference),
+		log(divisor),
+		copysign(vec3(1.0f) / divisor, difference),
 	};
 }
 
-inline __device__ LossAndGradient smape_loss(const Array3f& target, const Array3f& prediction) {
-	Array3f difference = prediction - target;
-	Array3f factor = (0.5f * (prediction.abs() + target.abs()) + Array3f::Constant(1e-2f)).inverse();
+inline __device__ LossAndGradient smape_loss(const vec3& target, const vec3& prediction) {
+	vec3 difference = prediction - target;
+	vec3 denom = 0.5f * (abs(prediction) + abs(target)) + vec3(1e-2f);
 	return {
-		difference.abs() * factor,
-		copysign(factor, difference),
+		abs(difference) / denom,
+		copysign(vec3(1.0f) / denom, difference),
 	};
 }
 
-inline __device__ LossAndGradient mape_loss(const Array3f& target, const Array3f& prediction) {
-	Array3f difference = prediction - target;
-	Array3f factor = (prediction.abs() + Array3f::Constant(1e-2f)).inverse();
+inline __device__ LossAndGradient mape_loss(const vec3& target, const vec3& prediction) {
+	vec3 difference = prediction - target;
+	vec3 denom = abs(prediction) + vec3(1e-2f);
 	return {
-		difference.abs() * factor,
-		copysign(factor, difference),
+		abs(difference) / denom,
+		copysign(vec3(1.0f) / denom, difference),
 	};
 }
 
-inline __device__ float distance_to_next_voxel(const Vector3f& pos, const Vector3f& dir, const Vector3f& idir, uint32_t res) { // dda like step
-	Vector3f p = res * pos;
-	float tx = (floorf(p.x() + 0.5f + 0.5f * sign(dir.x())) - p.x()) * idir.x();
-	float ty = (floorf(p.y() + 0.5f + 0.5f * sign(dir.y())) - p.y()) * idir.y();
-	float tz = (floorf(p.z() + 0.5f + 0.5f * sign(dir.z())) - p.z()) * idir.z();
+
+
+inline __device__ float distance_to_next_voxel(const vec3& pos, const vec3& dir, const vec3& idir, float res) { // dda like step
+	vec3 p = res * (pos - vec3(0.5f));
+	float tx = (floorf(p.x + 0.5f + 0.5f * sign(dir.x)) - p.x) * idir.x;
+	float ty = (floorf(p.y + 0.5f + 0.5f * sign(dir.y)) - p.y) * idir.y;
+	float tz = (floorf(p.z + 0.5f + 0.5f * sign(dir.z)) - p.z) * idir.z;
 	float t = min(min(tx, ty), tz);
 
 	return fmaxf(t / res, 0.0f);
 }
 
-inline __device__ float advance_to_next_voxel(float t, float cone_angle, const Vector3f& pos, const Vector3f& dir, const Vector3f& idir, uint32_t res) {
-	// Analytic stepping by a multiple of dt. Make empty space unequal to non-empty space
-	// due to the different stepping.
-	// float dt = calc_dt(t, cone_angle);
-	// return t + ceilf(fmaxf(distance_to_next_voxel(pos, dir, idir, res) / dt, 0.5f)) * dt;
 
-	// Regular stepping (may be slower but matches non-empty space)
+
+
+inline __device__ float advance_to_next_voxel(float t, float cone_angle, const vec3& pos, const vec3& dir, const vec3& idir, uint32_t mip) {
+	float res = scalbnf(NERF_GRIDSIZE(), -(int)mip);
+
 	float t_target = t + distance_to_next_voxel(pos, dir, idir, res);
-	do {
-		t += calc_dt(t, cone_angle);
-	} while (t < t_target);
-	return t;
+
+	// Analytic stepping in multiples of 1 in the "log-space" of our exponential stepping routine
+	t = to_stepping_space(t, cone_angle);
+	t_target = to_stepping_space(t_target, cone_angle);
+
+	return from_stepping_space(t + ceilf(fmaxf(t_target - t, 0.5f)), cone_angle);
 }
+
 
 __device__ inline float network_to_rgb(float val, ENerfActivation activation) {
 	switch (activation) {
@@ -259,6 +325,17 @@ __device__ inline float network_to_rgb_derivative(float val, ENerfActivation act
 	}
 	return 0.0f;
 }
+
+template <typename T>
+__device__ inline vec3 network_to_rgb_derivative_vec(const T& val, ENerfActivation activation) {
+	return {
+		network_to_rgb_derivative(float(val[0]), activation),
+		network_to_rgb_derivative(float(val[1]), activation),
+		network_to_rgb_derivative(float(val[2]), activation),
+	};
+}
+
+
 
 __device__ inline float network_to_density(float val, ENerfActivation activation) {
 	switch (activation) {
@@ -290,45 +367,59 @@ __device__ inline Array3f network_to_rgb(const tcnn::vector_t<tcnn::network_prec
 	};
 }
 
-__device__ inline Vector3f warp_position(const Vector3f& pos, const BoundingBox& aabb) {
-	// return {tcnn::logistic(pos.x() - 0.5f), tcnn::logistic(pos.y() - 0.5f), tcnn::logistic(pos.z() - 0.5f)};
-	// return pos;
 
+template <typename T>
+__device__ inline vec3 network_to_rgb_vec(const T& val, ENerfActivation activation) {
+	return {
+		network_to_rgb(float(val[0]), activation),
+		network_to_rgb(float(val[1]), activation),
+		network_to_rgb(float(val[2]), activation),
+	};
+}
+
+
+
+
+__device__ inline vec3 warp_position(const vec3& pos, const BoundingBox& aabb) {
+	// return {tcnn::logistic(pos.x - 0.5f), tcnn::logistic(pos.y - 0.5f), tcnn::logistic(pos.z - 0.5f)};
+	// return pos;
 	return aabb.relative_pos(pos);
 }
 
-__device__ inline Vector3f unwarp_position(const Vector3f& pos, const BoundingBox& aabb) {
-	// return {logit(pos.x()) + 0.5f, logit(pos.y()) + 0.5f, logit(pos.z()) + 0.5f};
+
+__device__ inline vec3 unwarp_position(const vec3& pos, const BoundingBox& aabb) {
+	// return {logit(pos.x) + 0.5f, logit(pos.y) + 0.5f, logit(pos.z) + 0.5f};
 	// return pos;
 
-	return aabb.min + pos.cwiseProduct(aabb.diag());
+	return aabb.min + pos * aabb.diag();
 }
 
-__device__ inline Vector3f unwarp_position_derivative(const Vector3f& pos, const BoundingBox& aabb) {
+__device__ inline vec3 unwarp_position_derivative(const vec3& pos, const BoundingBox& aabb) {
 	// return {logit(pos.x()) + 0.5f, logit(pos.y()) + 0.5f, logit(pos.z()) + 0.5f};
 	// return pos;
 
 	return aabb.diag();
 }
 
-__device__ inline Vector3f warp_position_derivative(const Vector3f& pos, const BoundingBox& aabb) {
-	return unwarp_position_derivative(pos, aabb).cwiseInverse();
+__device__ inline vec3 warp_position_derivative(const vec3& pos, const BoundingBox& aabb) {
+	return vec3(1.0f) / unwarp_position_derivative(pos, aabb);
 }
 
-__host__ __device__ inline Vector3f warp_direction(const Vector3f& dir) {
-	return (dir + Vector3f::Ones()) * 0.5f;
+__host__ __device__ inline vec3 warp_direction(const vec3& dir) {
+	return (dir + vec3(1.0f)) * 0.5f;
 }
 
-__device__ inline Vector3f unwarp_direction(const Vector3f& dir) {
-	return dir * 2.0f - Vector3f::Ones();
+__device__ inline vec3 unwarp_direction(const vec3& dir) {
+	return dir * 2.0f - vec3(1.0f);
 }
 
-__device__ inline Vector3f warp_direction_derivative(const Vector3f& dir) {
-	return Vector3f::Constant(0.5f);
+
+__device__ inline vec3 warp_direction_derivative(const vec3& dir) {
+	return vec3(0.5f);
 }
 
-__device__ inline Vector3f unwarp_direction_derivative(const Vector3f& dir) {
-	return Vector3f::Constant(2.0f);
+__device__ inline vec3 unwarp_direction_derivative(const vec3& dir) {
+	return vec3(2.0f);
 }
 
 __device__ inline float warp_dt(float dt) {
@@ -341,41 +432,54 @@ __device__ inline float unwarp_dt(float dt) {
 	return dt * (max_stepsize - MIN_CONE_STEPSIZE()) + MIN_CONE_STEPSIZE();
 }
 
-__device__ inline uint32_t cascaded_grid_idx_at(Vector3f pos, uint32_t mip) {
+
+__device__ inline uint32_t cascaded_grid_idx_at(vec3 pos, uint32_t mip) {
 	float mip_scale = scalbnf(1.0f, -mip);
-	pos -= Vector3f::Constant(0.5f);
+	pos -= vec3(0.5f);
 	pos *= mip_scale;
-	pos += Vector3f::Constant(0.5f);
+	pos += vec3(0.5f);
 
-	Vector3i i = (pos * NERF_GRIDSIZE()).cast<int>();
-
-	if (i.x() < -1 || i.x() > NERF_GRIDSIZE() || i.y() < -1 || i.y() > NERF_GRIDSIZE() || i.z() < -1 || i.z() > NERF_GRIDSIZE()) {
-		printf("WTF %d %d %d\n", i.x(), i.y(), i.z());
+	ivec3 i = pos * (float)NERF_GRIDSIZE();
+	if (i.x < 0 || i.x >= NERF_GRIDSIZE() || i.y < 0 || i.y >= NERF_GRIDSIZE() || i.z < 0 || i.z >= NERF_GRIDSIZE()) {
+		return 0xFFFFFFFF;
 	}
 
-	uint32_t idx = tcnn::morton3D(
-		tcnn::clamp(i.x(), 0, (int)NERF_GRIDSIZE()-1),
-		tcnn::clamp(i.y(), 0, (int)NERF_GRIDSIZE()-1),
-		tcnn::clamp(i.z(), 0, (int)NERF_GRIDSIZE()-1)
-	);
-
-	return idx;
+	return tcnn::morton3D(i.x, i.y, i.z);
 }
 
-__device__ inline bool density_grid_occupied_at(const Vector3f& pos, const uint8_t* density_grid_bitfield, uint32_t mip) {
+
+__device__ inline bool density_grid_occupied_at(const vec3& pos, const uint8_t* density_grid_bitfield, uint32_t mip) {
 	uint32_t idx = cascaded_grid_idx_at(pos, mip);
+	if (idx == 0xFFFFFFFF) {
+		return false;
+	}
 	return density_grid_bitfield[idx/8+grid_mip_offset(mip)/8] & (1<<(idx%8));
 }
 
-__device__ inline float cascaded_grid_at(Vector3f pos, const float* cascaded_grid, uint32_t mip) {
+
+__device__ inline float cascaded_grid_at(vec3 pos, const float* cascaded_grid, uint32_t mip) {
 	uint32_t idx = cascaded_grid_idx_at(pos, mip);
+	if (idx == 0xFFFFFFFF) {
+		return 0.0f;
+	}
 	return cascaded_grid[idx+grid_mip_offset(mip)];
 }
 
-__device__ inline float& cascaded_grid_at(Vector3f pos, float* cascaded_grid, uint32_t mip) {
+
+__device__ inline float& cascaded_grid_at(vec3 pos, float* cascaded_grid, uint32_t mip) {
 	uint32_t idx = cascaded_grid_idx_at(pos, mip);
+	if (idx == 0xFFFFFFFF) {
+		idx = 0;
+		printf("WARNING: invalid cascaded grid access.");
+	}
 	return cascaded_grid[idx+grid_mip_offset(mip)];
 }
+
+
+
+
+
+
 
 
 
@@ -478,6 +582,8 @@ __device__ inline LossAndGradient loss_and_gradient(const Vector3f& target, cons
 		default: case ELossType::L2: return l2_loss(target, prediction); break;
 	}
 }
+
+
 
 
 NGP_NAMESPACE_END
