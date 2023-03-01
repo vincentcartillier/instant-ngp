@@ -22,3 +22,6 @@
 [submodule "dependencies/dlss"]
 	path = dependencies/dlss
 	url = https://github.com/NVIDIA/DLSS
+[submodule "dependencies/Sophus"]
+	path = dependencies/Sophus
+	url = git@github.com:strasdat/Sophus.git
