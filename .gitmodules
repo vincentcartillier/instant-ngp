@@ -22,6 +22,3 @@
 [submodule "dependencies/dlss"]
 	path = dependencies/dlss
 	url = https://github.com/NVIDIA/DLSS
-[submodule "dependencies/lietorch"]
-	path = dependencies/lietorch
-	url = git@github.com:princeton-vl/lietorch.git
