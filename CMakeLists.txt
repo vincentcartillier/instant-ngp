@@ -83,6 +83,8 @@ list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
 # Dependencies
 ###############################################################################
 
+add_subdirectory(dependencies/Sophus)
+
 set(TCNN_BUILD_BENCHMARK OFF)
 set(TCNN_BUILD_EXAMPLES OFF)
 add_subdirectory(dependencies/tiny-cuda-nn)
@@ -177,6 +179,7 @@ list(APPEND NGP_INCLUDE_DIRECTORIES
 	"dependencies/filesystem"
 	"dependencies/nanovdb"
 	"dependencies/tinylogger"
+    "dependencies/Sophus"
 )
 
 find_package(OpenMP)

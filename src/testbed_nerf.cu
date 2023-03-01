@@ -34,6 +34,7 @@
 #include <filesystem/directory.h>
 #include <filesystem/path.h>
 
+#include <sophus/se3.hpp>
 
 #include <testbed_nerf_utils.cu>
 
@@ -2928,20 +2929,61 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 	if (transforms.size() < last) {
 		transforms.resize(last);
 	}
+	
 
 	for (uint32_t i = 0; i < n; ++i) {
 		auto xform = dataset.xforms[i + first];
 		Vector3f rot = cam_rot_offset[i + first].variable();
-		float angle = rot.norm();
-		rot /= angle;
+		Vector3f tra = cam_pos_offset[i + first].variable();
+		// float angle = rot.norm();
+		// rot /= angle;
 
-		if (angle > 0) {
-			xform.start.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform.start.block<3, 3>(0, 0);
-			xform.end.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform.end.block<3, 3>(0, 0);
+		Vector<float,6> tangent {tra.x(), tra.y(), tra.z(), rot.x(), rot.y(), rot.z()};
+		Sophus::SE3f dx = Sophus::SE3f().exp(tangent);
+
+		//NOTE: start	
+		//Vector3f e_start_t = {xform.start(0, 3), xform.start(1, 3), xform.start(2, 3)};
+		Vector3f e_start_t = xform.start.block<3, 1>(0, 3);
+		Matrix3f e_start_R = xform.start.block<3, 3>(0, 0);
+		float det_e_start_R = e_start_R.determinant();
+		if (std::abs(det_e_start_R - 1.0f) > 0.00000001f) {
+			tlog::warning()<<" determinant of rotation matrix is not exactly 1. | "<<det_e_start_R<< " --> normalizing the rotation matrix";
+			e_start_R /= std::cbrt(det_e_start_R);
 		}
+		Sophus::SE3f start_T = Sophus::SE3f(e_start_R, e_start_t);
+		Sophus::SE3f new_start_T = dx * start_T;
 
-		xform.start.col(3) += cam_pos_offset[i + first].variable();
-		xform.end.col(3) += cam_pos_offset[i + first].variable();
+		Vector3f new_start_t = new_start_T.translation();
+		Matrix3f new_start_R = new_start_T.so3().matrix();
+		xform.start.block<3, 3>(0, 0) = new_start_R;
+		xform.start.block<3, 1>(0, 3) = new_start_t;
+
+		//NOTE: end
+		Vector3f e_end_t = xform.end.block<3, 1>(0, 3);
+		Matrix3f e_end_R = xform.end.block<3, 3>(0, 0);
+		float det_e_end_R = e_end_R.determinant();
+		if (std::abs(det_e_end_R - 1.0f) > 0.00000001f) {
+			tlog::warning()<<" determinant of rotation matrix is not exactly 1. | "<<det_e_end_R<< " --> normalizing the rotation matrix";
+			e_end_R /= std::cbrt(det_e_end_R);
+		}
+	
+		Sophus::SE3f end_T = Sophus::SE3f(e_end_R, e_end_t);
+		Sophus::SE3f new_end_T = dx * end_T;
+
+		Vector3f new_end_t = new_end_T.translation();
+		Matrix3f new_end_R = new_end_T.so3().matrix();
+		xform.end.block<3, 3>(0, 0) = new_end_R;
+		xform.end.block<3, 1>(0, 3) = new_end_t;
+
+
+		// if (angle > 0) {
+		// 	xform.start.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform.start.block<3, 3>(0, 0);
+		// 	xform.end.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform.end.block<3, 3>(0, 0);
+		// }
+
+		// xform.start.col(3) += cam_pos_offset[i + first].variable();
+		// xform.end.col(3) += cam_pos_offset[i + first].variable();
+
 		transforms[i + first] = xform;
 	}
 
