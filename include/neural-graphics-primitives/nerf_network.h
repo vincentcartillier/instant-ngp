@@ -390,86 +390,33 @@ public:
 		}
 	}
 
-	void set_params(T* params, T* inference_params, T* backward_params, T* gradients) override {
+	void set_params_impl(T* params, T* inference_params, T* gradients) override {
 		size_t offset = 0;
-		m_density_network->set_params(
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset
-		);
+		m_density_network->set_params(params + offset, inference_params + offset, gradients + offset);
 		offset += m_density_network->n_params();
 
-		m_rgb_network->set_params(
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset
-		);
+		m_rgb_network->set_params(params + offset, inference_params + offset, gradients + offset);
 		offset += m_rgb_network->n_params();
 
-		m_pos_encoding->set_params(
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset
-		);
+		m_pos_encoding->set_params(params + offset, inference_params + offset, gradients + offset);
 		offset += m_pos_encoding->n_params();
 
-		m_dir_encoding->set_params(
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset
-		);
+		m_dir_encoding->set_params(params + offset, inference_params + offset, gradients + offset);
 		offset += m_dir_encoding->n_params();
 	}
 
-	void initialize_params(tcnn::pcg32& rnd, float* params_full_precision, T* params, T* inference_params, T* backward_params, T* gradients, float scale = 1) override {
-		size_t offset = 0;
-		m_density_network->initialize_params(
-			rnd,
-			params_full_precision + offset,
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset,
-			scale
-		);
-		offset += m_density_network->n_params();
+	void initialize_params(tcnn::pcg32& rnd, float* params_full_precision, float scale = 1) override {
+		m_density_network->initialize_params(rnd, params_full_precision, scale);
+		params_full_precision += m_density_network->n_params();
 
-		m_rgb_network->initialize_params(
-			rnd,
-			params_full_precision + offset,
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset,
-			scale
-		);
-		offset += m_rgb_network->n_params();
+		m_rgb_network->initialize_params(rnd, params_full_precision, scale);
+		params_full_precision += m_rgb_network->n_params();
 
-		m_pos_encoding->initialize_params(
-			rnd,
-			params_full_precision + offset,
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset,
-			scale
-		);
-		offset += m_pos_encoding->n_params();
+		m_pos_encoding->initialize_params(rnd, params_full_precision, scale);
+		params_full_precision += m_pos_encoding->n_params();
 
-		m_dir_encoding->initialize_params(
-			rnd,
-			params_full_precision + offset,
-			params + offset,
-			inference_params + offset,
-			backward_params + offset,
-			gradients + offset,
-			scale
-		);
-		offset += m_dir_encoding->n_params();
+		m_dir_encoding->initialize_params(rnd, params_full_precision, scale);
+		params_full_precision += m_dir_encoding->n_params();
 	}
 
 	void set_render_blurry(bool render_blurry) {
@@ -537,12 +484,20 @@ public:
 		}
 	}
 
-	const std::shared_ptr<tcnn::Encoding<T>>& encoding() const {
+	const std::shared_ptr<tcnn::Encoding<T>>& pos_encoding() const {
 		return m_pos_encoding;
 	}
 
 	const std::shared_ptr<tcnn::Encoding<T>>& dir_encoding() const {
 		return m_dir_encoding;
+	}
+
+	const std::shared_ptr<tcnn::Network<T>>& density_network() const {
+		return m_density_network;
+	}
+
+	const std::shared_ptr<tcnn::Network<T>>& rgb_network() const {
+		return m_rgb_network;
 	}
 
 	tcnn::json hyperparams() const override {
@@ -558,8 +513,8 @@ public:
 	}
 
 private:
-	std::unique_ptr<tcnn::Network<T>> m_density_network;
-	std::unique_ptr<tcnn::Network<T>> m_rgb_network;
+	std::shared_ptr<tcnn::Network<T>> m_density_network;
+	std::shared_ptr<tcnn::Network<T>> m_rgb_network;
 	std::shared_ptr<tcnn::Encoding<T>> m_pos_encoding;
 	std::shared_ptr<tcnn::Encoding<T>> m_dir_encoding;
 

@@ -15,15 +15,14 @@
 #include <neural-graphics-primitives/common_device.cuh>
 #include <neural-graphics-primitives/testbed.h>
 #include <neural-graphics-primitives/thread_pool.h>
-#include <neural-graphics-primitives/nerf_loader.h>
 
 #include <json/json.hpp>
 
 #include <pybind11/pybind11.h>
-#include <pybind11/eigen.h>
 #include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+#include <pybind11_glm/pybind11_glm.hpp>
 #include <pybind11_json/pybind11_json.hpp>
 
 #include <filesystem/path.h>
@@ -39,7 +38,6 @@
 #endif
 
 using namespace tcnn;
-using namespace Eigen;
 using namespace nlohmann;
 namespace py = pybind11;
 
@@ -47,18 +45,8 @@ using namespace pybind11::literals; // to bring in the `_a` literal
 
 NGP_NAMESPACE_BEGIN
 
-std::vector<Eigen::Matrix<float, 3, 4> > NerfDataset::get_poses_ngp() {
-	std::vector<Eigen::Matrix<float, 3, 4> > result;
-    for (size_t i = 0; i < n_images; ++i) {
-        result.push_back (xforms[i].start);
-    }
-    return result;
-}
 
-void Testbed::Nerf::Training::set_image(int frame_idx,
-                                        pybind11::array_t<uint8_t> img,
-                                        pybind11::array_t<float> depth_img,
-                                        float depth_scale) {
+void Testbed::Nerf::Training::set_image(int frame_idx, pybind11::array_t<float> img, pybind11::array_t<float> depth_img, float depth_scale) {
 	if (frame_idx < 0 || frame_idx >= dataset.n_images) {
 		throw std::runtime_error{"Invalid frame index"};
 	}
@@ -75,7 +63,7 @@ void Testbed::Nerf::Training::set_image(int frame_idx,
 
 	py::buffer_info depth_buf = depth_img.request();
 
-	dataset.set_training_image(frame_idx, {img_buf.shape[1], img_buf.shape[0]}, (const void*)img_buf.ptr, (const float*)depth_buf.ptr, depth_scale, false, EImageDataType::Byte, EDepthDataType::Float);
+	dataset.set_training_image(frame_idx, {img_buf.shape[1], img_buf.shape[0]}, (const void*)img_buf.ptr, (const float*)depth_buf.ptr, depth_scale, false, EImageDataType::Float, EDepthDataType::Float);
 }
 
 void Testbed::override_sdf_training_data(py::array_t<float> points, py::array_t<float> distances) {
@@ -87,14 +75,14 @@ void Testbed::override_sdf_training_data(py::array_t<float> points, py::array_t<
 		return;
 	}
 
-	std::vector<Vector3f> points_cpu(points_buf.shape[0]);
+	std::vector<vec3> points_cpu(points_buf.shape[0]);
 	std::vector<float> distances_cpu(distances_buf.shape[0]);
 
 	for (size_t i = 0; i < points_cpu.size(); ++i) {
-		Vector3f pos = *((Vector3f*)points_buf.ptr + i);
+		vec3 pos = *((vec3*)points_buf.ptr + i);
 		float dist = *((float*)distances_buf.ptr + i);
 
-		pos = (pos - m_raw_aabb.min) / m_sdf.mesh_scale + 0.5f * (Vector3f::Ones() - (m_raw_aabb.max - m_raw_aabb.min) / m_sdf.mesh_scale);
+		pos = (pos - m_raw_aabb.min) / m_sdf.mesh_scale + 0.5f * (vec3(1.0f) - (m_raw_aabb.max - m_raw_aabb.min) / m_sdf.mesh_scale);
 		dist /= m_sdf.mesh_scale;
 
 		points_cpu[i] = pos;
@@ -110,8 +98,8 @@ void Testbed::override_sdf_training_data(py::array_t<float> points, py::array_t<
 	m_sdf.training.generate_sdf_data_online = false;
 }
 
-pybind11::dict Testbed::compute_marching_cubes_mesh(Eigen::Vector3i res3d, BoundingBox aabb, float thresh) {
-	Matrix3f render_aabb_to_local = Matrix3f::Identity();
+pybind11::dict Testbed::compute_marching_cubes_mesh(ivec3 res3d, BoundingBox aabb, float thresh) {
+	mat3 render_aabb_to_local = mat3(1.0f);
 	if (aabb.is_empty()) {
 		aabb = m_testbed_mode == ETestbedMode::Nerf ? m_render_aabb : m_aabb;
 		render_aabb_to_local = m_render_aabb_to_local;
@@ -128,9 +116,9 @@ pybind11::dict Testbed::compute_marching_cubes_mesh(Eigen::Vector3i res3d, Bound
 	CUDA_CHECK_THROW(cudaMemcpy(cpucolors.request().ptr, m_mesh.vert_colors.data() , m_mesh.vert_colors.size() * 3 * sizeof(float), cudaMemcpyDeviceToHost));
 	CUDA_CHECK_THROW(cudaMemcpy(cpuindices.request().ptr, m_mesh.indices.data() , m_mesh.indices.size() * sizeof(int), cudaMemcpyDeviceToHost));
 
-	Eigen::Vector3f* ns = (Eigen::Vector3f*)cpunormals.request().ptr;
+	vec3* ns = (vec3*)cpunormals.request().ptr;
 	for (size_t i = 0; i < m_mesh.vert_normals.size(); ++i) {
-		ns[i].normalize();
+		ns[i] = normalize(ns[i]);
 	}
 
 	return py::dict("V"_a=cpuverts, "N"_a=cpunormals, "C"_a=cpucolors, "F"_a=cpuindices);
@@ -143,6 +131,7 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 	if (end_time < 0.f) {
 		end_time = start_time;
 	}
+
 	bool path_animation_enabled = start_time >= 0.f;
 	if (!path_animation_enabled) { // the old code disabled camera smoothing for non-path renders; so we preserve that behaviour
 		m_smoothed_camera = m_camera;
@@ -157,6 +146,7 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 		set_camera_from_time(start_time);
 		m_smoothed_camera = m_camera;
 	}
+
 	auto start_cam_matrix = m_smoothed_camera;
 
 	// now set up the end-of-frame camera matrix if we are moving along a path
@@ -164,14 +154,19 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 		set_camera_from_time(end_time);
 		apply_camera_smoothing(1000.f / fps);
 	}
+
 	auto end_cam_matrix = m_smoothed_camera;
+	auto prev_camera_matrix = m_smoothed_camera;
 
 	for (int i = 0; i < spp; ++i) {
 		float start_alpha = ((float)i)/(float)spp * shutter_fraction;
 		float end_alpha = ((float)i + 1.0f)/(float)spp * shutter_fraction;
 
-		auto sample_start_cam_matrix = log_space_lerp(start_cam_matrix, end_cam_matrix, start_alpha);
-		auto sample_end_cam_matrix = log_space_lerp(start_cam_matrix, end_cam_matrix, end_alpha);
+		auto sample_start_cam_matrix = start_cam_matrix;
+		auto sample_end_cam_matrix = camera_lerp(start_cam_matrix, end_cam_matrix, shutter_fraction);
+		if (i == 0) {
+			prev_camera_matrix = sample_start_cam_matrix;
+		}
 
 		if (path_animation_enabled) {
 			set_camera_from_time(start_time + (end_time-start_time) * (start_alpha + end_alpha) / 2.0f);
@@ -182,7 +177,21 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 			autofocus();
 		}
 
-		render_frame(sample_start_cam_matrix, sample_end_cam_matrix, Eigen::Vector4f::Zero(), m_windowless_render_surface, !linear);
+		render_frame(
+			m_stream.get(),
+			sample_start_cam_matrix,
+			sample_end_cam_matrix,
+			prev_camera_matrix,
+			m_screen_center,
+			m_relative_focal_length,
+			{0.0f, 0.0f, 0.0f, 1.0f},
+			{},
+			{},
+			m_visualized_dimension,
+			m_windowless_render_surface,
+			!linear
+		);
+		prev_camera_matrix = sample_start_cam_matrix;
 	}
 
 	// For cam smoothing when rendering the next frame.
@@ -195,36 +204,52 @@ py::array_t<float> Testbed::render_to_cpu(int width, int height, int spp, bool l
 	return result;
 }
 
-py::array_t<float> Testbed::render_with_rolling_shutter_to_cpu(const Eigen::Matrix<float, 3, 4>& camera_transform_start, const Eigen::Matrix<float, 3, 4>& camera_transform_end, const Eigen::Vector4f& rolling_shutter, int width, int height, int spp, bool linear) {
-	m_windowless_render_surface.resize({width, height});
-	m_windowless_render_surface.reset_accumulation();
-	for (int i = 0; i < spp; ++i) {
-		if (m_autofocus) {
-			autofocus();
-		}
-		render_frame(m_nerf.training.dataset.nerf_matrix_to_ngp(camera_transform_start), m_nerf.training.dataset.nerf_matrix_to_ngp(camera_transform_end), rolling_shutter, m_windowless_render_surface, !linear);
+py::array_t<float> Testbed::view(bool linear, size_t view_idx) const {
+	if (m_views.size() <= view_idx) {
+		throw std::runtime_error{fmt::format("View #{} does not exist.", view_idx)};
 	}
-	py::array_t<float> result({height, width, 4});
+
+	auto& view = m_views.at(view_idx);
+	auto& render_buffer = *view.render_buffer;
+
+	auto res = render_buffer.out_resolution();
+
+	py::array_t<float> result({res.y, res.x, 4});
 	py::buffer_info buf = result.request();
-	CUDA_CHECK_THROW(cudaMemcpy2DFromArray(buf.ptr, width * sizeof(float) * 4, m_windowless_render_surface.surface_provider().array(), 0, 0, width * sizeof(float) * 4, height, cudaMemcpyDeviceToHost));
+	float* data = (float*)buf.ptr;
+
+	CUDA_CHECK_THROW(cudaMemcpy2DFromArray(data, res.x * sizeof(float) * 4, render_buffer.surface_provider().array(), 0, 0, res.x * sizeof(float) * 4, res.y, cudaMemcpyDeviceToHost));
+
+	if (linear) {
+		ThreadPool{}.parallel_for<size_t>(0, res.y, [&](size_t y) {
+			size_t base = y * res.x;
+			for (uint32_t x = 0; x < res.x; ++x) {
+				size_t px = base + x;
+				data[px*4+0] = srgb_to_linear(data[px*4+0]);
+				data[px*4+1] = srgb_to_linear(data[px*4+1]);
+				data[px*4+2] = srgb_to_linear(data[px*4+2]);
+			}
+		});
+	}
+
 	return result;
 }
 
 #ifdef NGP_GUI
-py::array_t<float> Testbed::screenshot(bool linear) const {
-	std::vector<float> tmp(m_window_res.prod() * 4);
-	glReadPixels(0, 0, m_window_res.x(), m_window_res.y(), GL_RGBA, GL_FLOAT, tmp.data());
+py::array_t<float> Testbed::screenshot(bool linear, bool front_buffer) const {
+	std::vector<float> tmp(compMul(m_window_res) * 4);
+	glReadBuffer(front_buffer ? GL_FRONT : GL_BACK);
+	glReadPixels(0, 0, m_window_res.x, m_window_res.y, GL_RGBA, GL_FLOAT, tmp.data());
 
-	py::array_t<float> result({m_window_res.y(), m_window_res.x(), 4});
+	py::array_t<float> result({m_window_res.y, m_window_res.x, 4});
 	py::buffer_info buf = result.request();
 	float* data = (float*)buf.ptr;
 
 	// Linear, alpha premultiplied, Y flipped
-	ThreadPool pool;
-	pool.parallelFor<size_t>(0, m_window_res.y(), [&](size_t y) {
-		size_t base = y * m_window_res.x();
-		size_t base_reverse = (m_window_res.y() - y - 1) * m_window_res.x();
-		for (uint32_t x = 0; x < m_window_res.x(); ++x) {
+	ThreadPool{}.parallel_for<size_t>(0, m_window_res.y, [&](size_t y) {
+		size_t base = y * m_window_res.x;
+		size_t base_reverse = (m_window_res.y - y - 1) * m_window_res.x;
+		for (uint32_t x = 0; x < m_window_res.x; ++x) {
 			size_t px = base + x;
 			size_t px_reverse = base_reverse + x;
 			data[px_reverse*4+0] = linear ? srgb_to_linear(tmp[px*4+0]) : tmp[px*4+0];
@@ -248,7 +273,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("Sdf", ETestbedMode::Sdf)
 		.value("Image", ETestbedMode::Image)
 		.value("Volume", ETestbedMode::Volume)
+		.value("None", ETestbedMode::None)
 		.export_values();
+
+	m.def("mode_from_scene", &mode_from_scene);
+	m.def("mode_from_string", &mode_from_string);
 
 	py::enum_<EGroundTruthRenderMode>(m, "GroundTruthRenderMode")
 		.value("Shade", EGroundTruthRenderMode::Shade)
@@ -322,21 +351,21 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("OpenCV", ELensMode::OpenCV)
 		.value("FTheta", ELensMode::FTheta)
 		.value("LatLong", ELensMode::LatLong)
+		.value("OpenCVFisheye", ELensMode::OpenCVFisheye)
+		.value("Equirectangular", ELensMode::Equirectangular)
 		.export_values();
 
 	py::class_<BoundingBox>(m, "BoundingBox")
 		.def(py::init<>())
-		.def(py::init<const Vector3f&, const Vector3f&>())
+		.def(py::init<const vec3&, const vec3&>())
 		.def("center", &BoundingBox::center)
 		.def("contains", &BoundingBox::contains)
 		.def("diag", &BoundingBox::diag)
 		.def("distance", &BoundingBox::distance)
 		.def("distance_sq", &BoundingBox::distance_sq)
-		.def("enlarge", py::overload_cast<const Vector3f&>(&BoundingBox::enlarge))
+		.def("enlarge", py::overload_cast<const vec3&>(&BoundingBox::enlarge))
 		.def("enlarge", py::overload_cast<const BoundingBox&>(&BoundingBox::enlarge))
 		.def("get_vertices", &BoundingBox::get_vertices)
-		.def("get_min", &BoundingBox::get_min)
-		.def("get_max", &BoundingBox::get_max)
 		.def("inflate", &BoundingBox::inflate)
 		.def("intersection", &BoundingBox::intersection)
 		.def("intersects", py::overload_cast<const BoundingBox&>(&BoundingBox::intersects, py::const_))
@@ -347,23 +376,33 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("max", &BoundingBox::max)
 		;
 
+	py::class_<fs::path>(m, "path")
+		.def(py::init<>())
+		.def(py::init<const std::string&>())
+		;
+
+	py::implicitly_convertible<std::string, fs::path>();
+
 	py::class_<Testbed> testbed(m, "Testbed");
 	testbed
-		.def(py::init<ETestbedMode>())
-		.def(py::init<ETestbedMode, const std::string&, const std::string&>())
-		.def(py::init<ETestbedMode, const std::string&, const json&>())
+		.def(py::init<ETestbedMode>(), py::arg("mode") = ETestbedMode::None)
+		.def(py::init<ETestbedMode, const fs::path&, const fs::path&>())
+		.def(py::init<ETestbedMode, const fs::path&, const json&>())
+		.def_readonly("mode", &Testbed::m_testbed_mode)
 		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("aabb_scale")=1, py::arg("is_hdr")=false)
 		.def("load_training_data", &Testbed::load_training_data, py::call_guard<py::gil_scoped_release>(), "Load training data from a given path.")
 		.def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
-		.def("expand_training_data", &Testbed::expand_training_data, py::arg("n_additional_images"), "Allocate memory for adding training data to existing dataset.")
 		// General control
-#ifdef NGP_GUI
-		.def("init_window", &Testbed::init_window, "Init a GLFW window that shows real-time progress and a GUI. 'second_window' creates a second copy of the output in its own window",
+		.def("init_window", &Testbed::init_window, "Init a GLFW window that shows real-time progress and a GUI. 'second_window' creates a second copy of the output in its own window.",
 			py::arg("width"),
 			py::arg("height"),
 			py::arg("hidden") = false,
 			py::arg("second_window") = false
 		)
+		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
+		.def("init_vr", &Testbed::init_vr, "Init rendering to a connected and active VR headset. Requires a window to have been previously created via `init_window`.")
+		.def("view", &Testbed::view, "Outputs the currently displayed image by a given view (0 by default).", py::arg("linear")=true, py::arg("view")=0)
+#ifdef NGP_GUI
 		.def_readwrite("keyboard_event_callback", &Testbed::m_keyboard_event_callback)
 		.def("is_key_pressed", [](py::object& obj, int key) { return ImGui::IsKeyPressed(key); })
 		.def("is_key_down", [](py::object& obj, int key) { return ImGui::IsKeyDown(key); })
@@ -371,7 +410,9 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("is_ctrl_down", [](py::object& obj) { return ImGui::GetIO().KeyMods & ImGuiKeyModFlags_Ctrl; })
 		.def("is_shift_down", [](py::object& obj) { return ImGui::GetIO().KeyMods & ImGuiKeyModFlags_Shift; })
 		.def("is_super_down", [](py::object& obj) { return ImGui::GetIO().KeyMods & ImGuiKeyModFlags_Super; })
-		.def("screenshot", &Testbed::screenshot, "Takes a screenshot of the current window contents.", py::arg("linear")=true)
+		.def("screenshot", &Testbed::screenshot, "Takes a screenshot of the current window contents.", py::arg("linear")=true, py::arg("front_buffer")=true)
+		.def_readwrite("vr_use_hidden_area_mask", &Testbed::m_vr_use_hidden_area_mask)
+		.def_readwrite("vr_use_depth_reproject", &Testbed::m_vr_use_depth_reproject)
 #endif
 		.def("want_repl", &Testbed::want_repl, "returns true if the user clicked the 'I want a repl' button")
 		.def("frame", &Testbed::frame, py::call_guard<py::gil_scoped_release>(), "Process a single frame. Renders if a window was previously created.")
@@ -385,19 +426,7 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("fps") = 30.f,
 			py::arg("shutter_fraction") = 1.0f
 		)
-		.def("render_with_rolling_shutter", &Testbed::render_with_rolling_shutter_to_cpu, "Renders an image at the requested resolution. Does not require a window. Supports rolling shutter, with per ray time being computed as A+B*u+C*v+D*t for [A,B,C,D]",
-			py::arg("transform_matrix_start"),
-			py::arg("transform_matrix_end"),
-			py::arg("rolling_shutter") = Eigen::Vector4f::Zero(),
-			py::arg("width") = 1920,
-			py::arg("height") = 1080,
-			py::arg("spp") = 1,
-			py::arg("linear") = true
-		)
-		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
-		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of training steps.")
-		.def("track_pose", &Testbed::track_pose, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of tracking steps.")
-		.def("bundle_adjustment", &Testbed::bundle_adjustment, py::call_guard<py::gil_scoped_release>(), "Perform a specified number of tracking steps.")
+		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a single training step with a specified batch size.")
 		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.",
 			py::arg("due_to_camera_movement") = false,
@@ -417,13 +446,14 @@ PYBIND11_MODULE(pyngp, m) {
 		)
 		.def("n_params", &Testbed::n_params, "Number of trainable parameters")
 		.def("n_encoding_params", &Testbed::n_encoding_params, "Number of trainable parameters in the encoding")
-		.def("save_snapshot", &Testbed::save_snapshot, py::arg("path"), py::arg("include_optimizer_state")=false, "Save a snapshot of the currently trained model")
+		.def("save_snapshot", &Testbed::save_snapshot, py::arg("path"), py::arg("include_optimizer_state")=false, py::arg("compress")=true, "Save a snapshot of the currently trained model. Optionally compressed (only when saving '.ingp' files).")
 		.def("load_snapshot", &Testbed::load_snapshot, py::arg("path"), "Load a previously saved snapshot")
-		.def("load_camera_path", &Testbed::load_camera_path, "Load a camera path", py::arg("path"))
+		.def("load_camera_path", &Testbed::load_camera_path, py::arg("path"), "Load a camera path")
+		.def("load_file", &Testbed::load_file, py::arg("path"), "Load a file and automatically determine how to handle it. Can be a snapshot, dataset, network config, or camera path.")
 		.def_property("loop_animation", &Testbed::loop_animation, &Testbed::set_loop_animation)
 		.def("compute_and_save_png_slices", &Testbed::compute_and_save_png_slices,
 			py::arg("filename"),
-			py::arg("resolution") = Eigen::Vector3i::Constant(256),
+			py::arg("resolution") = ivec3(256),
 			py::arg("aabb") = BoundingBox{},
 			py::arg("thresh") = std::numeric_limits<float>::max(),
 			py::arg("density_range") = 4.f,
@@ -432,7 +462,7 @@ PYBIND11_MODULE(pyngp, m) {
 		)
 		.def("compute_and_save_marching_cubes_mesh", &Testbed::compute_and_save_marching_cubes_mesh,
 			py::arg("filename"),
-			py::arg("resolution") = Eigen::Vector3i::Constant(256),
+			py::arg("resolution") = ivec3(256),
 			py::arg("aabb") = BoundingBox{},
 			py::arg("thresh") = std::numeric_limits<float>::max(),
 			py::arg("generate_uvs_for_obj_file") = false,
@@ -442,7 +472,7 @@ PYBIND11_MODULE(pyngp, m) {
 			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
 		)
 		.def("compute_marching_cubes_mesh", &Testbed::compute_marching_cubes_mesh,
-			py::arg("resolution") = Eigen::Vector3i::Constant(256),
+			py::arg("resolution") = ivec3(256),
 			py::arg("aabb") = BoundingBox{},
 			py::arg("thresh") = std::numeric_limits<float>::max(),
 			"Compute a marching cubes mesh from the current SDF or NeRF model. "
@@ -450,55 +480,20 @@ PYBIND11_MODULE(pyngp, m) {
 			"`thresh` is the density threshold; use 0 for SDF; 2.5 works well for NeRF. "
 			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
 		)
-		.def("set_nerf_network_render_blurry", &Testbed::set_nerf_network_render_blurry,
-			py::arg("render_blurry")
-        )
-		.def("manually_set_focal_length_for_rendering", &Testbed::manually_set_focal_length_for_rendering,
-			py::arg("fx"),
-			py::arg("fy")
-        )
-		.def("manually_set_screen_center_for_rendering", &Testbed::manually_set_screen_center_for_rendering,
-			py::arg("cx"),
-			py::arg("cy")
-        )
-		;
-
-	// Interesting members.
-	testbed
-		.def_readwrite("use_depth_var_in_tracking", &Testbed::m_tracking_use_depth_var_in_loss)
-		.def_readwrite("use_color_var_in_tracking", &Testbed::m_tracking_use_color_var_in_loss)
-		.def_readonly("tracking_rec_color_var", &Testbed::m_tracking_reconstructed_color_var)
-		.def_readonly("tracking_rec_depth_var", &Testbed::m_tracking_reconstructed_depth_var)
-		.def_readonly("tracking_rec_color_var_at_level", &Testbed::m_tracking_reconstructed_color_var_at_level)
-		.def_readonly("tracking_rec_depth_var_at_level", &Testbed::m_tracking_reconstructed_depth_var_at_level)
-		.def_readonly("tracking_pos_gradient_norm", &Testbed::m_tracking_pos_gradient_norm)
-		.def_readonly("tracking_rot_gradient_norm", &Testbed::m_tracking_rot_gradient_norm)
-		.def_readonly("ba_loss", &Testbed::m_ba_loss)
-		.def_readonly("ba_loss_depth", &Testbed::m_ba_loss_depth)
-		.def_readonly("tracking_loss", &Testbed::m_tracking_loss)
-		.def_readonly("tracking_loss_depth", &Testbed::m_tracking_loss_depth)
-		.def_readonly("mapping_loss", &Testbed::m_mapping_loss)
-		.def_readonly("mapping_loss_depth", &Testbed::m_mapping_loss_depth)
-		.def_readwrite("tracking_sigma", &Testbed::m_tracking_sigma_gaussian_kernel)
-		.def_readwrite("tracking_gaussian_pyramid_level", &Testbed::m_tracking_gaussian_pyramid_level)
-		.def_readwrite("tracking_mode", &Testbed::m_tracking_mode)
-		.def_readonly("num_rays_taken_in_tracking_step", &Testbed::m_track_pose_nerf_num_rays_in_tracking_step)
-		.def_readonly("num_super_rays_targeted_in_tracking_step", &Testbed::m_track_pose_nerf_num_super_rays_targeted_in_tracking_step)
-		.def_readwrite("tracking_kernel_window_size", &Testbed::m_tracking_kernel_window_size)
-		.def_readwrite("tracking_border_margin_W", &Testbed::m_sample_away_from_border_margin_w)
-		.def_readwrite("tracking_border_margin_H", &Testbed::m_sample_away_from_border_margin_h)
-		.def_readwrite("is_slam_mode", &Testbed::m_is_slam_mode)
-		.def_readwrite("m_render_nerf_depth_with_var", &Testbed::m_render_nerf_depth_with_var)
+		// Interesting members.
 		.def_readwrite("dynamic_res", &Testbed::m_dynamic_res)
 		.def_readwrite("dynamic_res_target_fps", &Testbed::m_dynamic_res_target_fps)
 		.def_readwrite("fixed_res_factor", &Testbed::m_fixed_res_factor)
 		.def_readwrite("background_color", &Testbed::m_background_color)
+		.def_readwrite("render_transparency_as_checkerboard", &Testbed::m_render_transparency_as_checkerboard)
 		.def_readwrite("shall_train", &Testbed::m_train)
 		.def_readwrite("shall_train_encoding", &Testbed::m_train_encoding)
 		.def_readwrite("shall_train_network", &Testbed::m_train_network)
 		.def_readwrite("render_groundtruth", &Testbed::m_render_ground_truth)
+		.def_readwrite("render_ground_truth", &Testbed::m_render_ground_truth)
 		.def_readwrite("groundtruth_render_mode", &Testbed::m_ground_truth_render_mode)
 		.def_readwrite("render_mode", &Testbed::m_render_mode)
+		.def_readwrite("render_near_distance", &Testbed::m_render_near_distance)
 		.def_readwrite("slice_plane_z", &Testbed::m_slice_plane_z)
 		.def_readwrite("dof", &Testbed::m_aperture_size)
 		.def_readwrite("aperture_size", &Testbed::m_aperture_size)
@@ -527,9 +522,6 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("compute_image_mse", &Testbed::compute_image_mse,
 			py::arg("quantize") = false
 		)
-		.def("reset_camera_optimizer", &Testbed::reset_camera_optimizer,
-			py::arg("cam_id")
-        )
 		.def_readwrite("camera_matrix", &Testbed::m_camera)
 		.def_readwrite("up_dir", &Testbed::m_up_dir)
 		.def_readwrite("sun_dir", &Testbed::m_sun_dir)
@@ -544,7 +536,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("sdf", &Testbed::m_sdf)
 		.def_readonly("image", &Testbed::m_image)
 		.def_readwrite("camera_smoothing", &Testbed::m_camera_smoothing)
-		.def_readwrite("display_gui", &Testbed::m_imgui_enabled)
+		.def_property("display_gui",
+			[](py::object& obj) { return obj.cast<Testbed&>().m_imgui.enabled; },
+			[](const py::object& obj, bool value) { obj.cast<Testbed&>().m_imgui.enabled = value; }
+		)
 		.def_readwrite("visualize_unit_cube", &Testbed::m_visualize_unit_cube)
 		.def_readwrite("snap_to_pixel_centers", &Testbed::m_snap_to_pixel_centers)
 		.def_readwrite("parallax_shift", &Testbed::m_parallax_shift)
@@ -553,7 +548,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_property("dlss",
 			[](py::object& obj) { return obj.cast<Testbed&>().m_dlss; },
 			[](const py::object& obj, bool value) {
-				if (value && !obj.cast<Testbed&>().m_dlss_supported) {
+				if (value && !obj.cast<Testbed&>().m_dlss_provider) {
 					if (obj.cast<Testbed&>().m_render_window) {
 						throw std::runtime_error{"DLSS not supported."};
 					} else {
@@ -568,8 +563,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("crop_box", &Testbed::crop_box, py::arg("nerf_space") = true)
 		.def("set_crop_box", &Testbed::set_crop_box, py::arg("matrix"), py::arg("nerf_space") = true)
 		.def("crop_box_corners", &Testbed::crop_box_corners, py::arg("nerf_space") = true)
-		.def("set_nerf_learning_rate", &Testbed::set_nerf_model_learning_rate, py::arg("params"))
-		.def("get_nerf_learning_rate", &Testbed::get_nerf_model_learning_rate)
+		.def_property("root_dir",
+			[](py::object& obj) { return obj.cast<Testbed&>().root_dir().str(); },
+			[](const py::object& obj, const std::string& value) { obj.cast<Testbed&>().m_root_dir = value; }
+		)
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -582,13 +579,6 @@ PYBIND11_MODULE(pyngp, m) {
 		;
 
 
-	py::class_<Testbed::NerfCounters> nerf_counter(testbed, "NerfCounters");
-    nerf_counter
-        .def_readwrite("rays_per_batch", &Testbed::NerfCounters::rays_per_batch)
-        .def_readonly("loss", &Testbed::NerfCounters::loss_cpu)
-        .def_readonly("loss_depth", &Testbed::NerfCounters::loss_depth_cpu)
-        ;
-
 	py::class_<Testbed::Nerf> nerf(testbed, "Nerf");
 	nerf
 		.def_readonly("training", &Testbed::Nerf::training)
@@ -600,12 +590,12 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("render_with_lens_distortion", &Testbed::Nerf::render_with_lens_distortion)
 		.def_readwrite("render_distortion", &Testbed::Nerf::render_lens)
 		.def_readwrite("render_lens", &Testbed::Nerf::render_lens)
-		.def_readwrite("rendering_min_transmittance", &Testbed::Nerf::rendering_min_transmittance)
+		.def_readwrite("rendering_min_transmittance", &Testbed::Nerf::render_min_transmittance)
+		.def_readwrite("render_min_transmittance", &Testbed::Nerf::render_min_transmittance)
 		.def_readwrite("cone_angle_constant", &Testbed::Nerf::cone_angle_constant)
 		.def_readwrite("visualize_cameras", &Testbed::Nerf::visualize_cameras)
 		.def_readwrite("glow_y_cutoff", &Testbed::Nerf::glow_y_cutoff)
 		.def_readwrite("glow_mode", &Testbed::Nerf::glow_mode)
-		.def_readwrite("finest_resolution", &Testbed::Nerf::finest_resolution)
 		;
 
 	py::class_<BRDFParams> brdfparams(m, "BRDFParams");
@@ -623,11 +613,12 @@ PYBIND11_MODULE(pyngp, m) {
 
 	py::class_<TrainingImageMetadata> metadata(m, "TrainingImageMetadata");
 	metadata
-		.def_readwrite("focal_length", &TrainingImageMetadata::focal_length)
 		// Legacy member: lens used to be called "camera_distortion"
 		.def_readwrite("camera_distortion", &TrainingImageMetadata::lens)
 		.def_readwrite("lens", &TrainingImageMetadata::lens)
+		.def_readwrite("resolution", &TrainingImageMetadata::resolution)
 		.def_readwrite("principal_point", &TrainingImageMetadata::principal_point)
+		.def_readwrite("focal_length", &TrainingImageMetadata::focal_length)
 		.def_readwrite("rolling_shutter", &TrainingImageMetadata::rolling_shutter)
 		.def_readwrite("light_dir", &TrainingImageMetadata::light_dir)
 		;
@@ -640,43 +631,21 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("render_aabb", &NerfDataset::render_aabb)
 		.def_readonly("render_aabb_to_local", &NerfDataset::render_aabb_to_local)
 		.def_readonly("up", &NerfDataset::up)
-        //.def_readonly("offset", &NerfDataset::offset)
-		.def_readwrite("offset", &NerfDataset::offset)
+		.def_readonly("offset", &NerfDataset::offset)
 		.def_readonly("n_images", &NerfDataset::n_images)
 		.def_readonly("envmap_resolution", &NerfDataset::envmap_resolution)
-		//.def_readonly("scale", &NerfDataset::scale)
-		.def_readwrite("scale", &NerfDataset::scale)
-		.def_readwrite("aabb_scale", &NerfDataset::aabb_scale)
+		.def_readonly("scale", &NerfDataset::scale)
+		.def_readonly("aabb_scale", &NerfDataset::aabb_scale)
 		.def_readonly("from_mitsuba", &NerfDataset::from_mitsuba)
 		.def_readonly("is_hdr", &NerfDataset::is_hdr)
-		.def_readwrite("wants_importance_sampling", &NerfDataset::wants_importance_sampling)
-		.def("get_poses_ngp", &NerfDataset::get_poses_ngp, "Return an array with all the camera poses as stored in NGP (Nx4x4)"
-        )
 		;
 
 	py::class_<Testbed::Nerf::Training>(nerf, "Training")
-		.def_readwrite("n_steps_since_cam_update", &Testbed::Nerf::Training::n_steps_since_cam_update)
-		.def_readwrite("n_steps_between_cam_updates", &Testbed::Nerf::Training::n_steps_between_cam_updates)
-		.def_readwrite("n_steps_since_cam_update_tracking", &Testbed::Nerf::Training::n_steps_since_cam_update_tracking)
-		.def_readwrite("n_steps_between_cam_updates_tracking", &Testbed::Nerf::Training::n_steps_between_cam_updates_tracking)
-		.def_readwrite("n_steps_since_cam_update_ba", &Testbed::Nerf::Training::n_steps_since_cam_update_ba)
-		.def_readwrite("n_steps_between_cam_updates_ba", &Testbed::Nerf::Training::n_steps_between_cam_updates_ba)
-		.def_readwrite("n_steps_since_map_update_ba", &Testbed::Nerf::Training::n_steps_since_map_update_ba)
-		.def_readwrite("n_steps_between_map_updates_ba", &Testbed::Nerf::Training::n_steps_between_map_updates_ba)
-		.def_readonly("counters_rgb_track", &Testbed::Nerf::Training::counters_rgb_track)
 		.def_readwrite("random_bg_color", &Testbed::Nerf::Training::random_bg_color)
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
-		.def_readwrite("n_images_for_training_slam", &Testbed::Nerf::Training::n_images_for_training_slam)
-		.def_readwrite("idx_images_for_training_slam", &Testbed::Nerf::Training::idx_images_for_training_slam)
-		.def_readwrite("idx_images_for_training_slam_pose", &Testbed::Nerf::Training::idx_images_for_training_slam_pose)
-		.def_readwrite("images_tracking_loss", &Testbed::Nerf::Training::images_tracking_loss)
-		.def_readwrite("images_tracking_std", &Testbed::Nerf::Training::images_tracking_std)
-		.def_readwrite("indice_image_for_tracking_pose", &Testbed::Nerf::Training::indice_image_for_tracking_pose)
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
 		.def_readwrite("loss_type", &Testbed::Nerf::Training::loss_type)
 		.def_readwrite("depth_loss_type", &Testbed::Nerf::Training::depth_loss_type)
-		.def_readwrite("track_loss_type", &Testbed::Nerf::Training::track_loss_type)
-		.def_readwrite("track_depth_loss_type", &Testbed::Nerf::Training::track_depth_loss_type)
 		.def_readwrite("snap_to_pixel_centers", &Testbed::Nerf::Training::snap_to_pixel_centers)
 		.def_readwrite("optimize_extrinsics", &Testbed::Nerf::Training::optimize_extrinsics)
 		.def_readwrite("optimize_extra_dims", &Testbed::Nerf::Training::optimize_extra_dims)
@@ -703,6 +672,8 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("cx")=-0.5f, py::arg("cy")=-0.5f,
 			py::arg("k1")=0.f, py::arg("k2")=0.f,
 			py::arg("p1")=0.f, py::arg("p2")=0.f,
+			py::arg("k3")=0.f, py::arg("k4")=0.f,
+			py::arg("is_fisheye")=false,
 			"Set up the camera intrinsics for the given training image index."
 		)
 		.def("set_camera_extrinsics", &Testbed::Nerf::Training::set_camera_extrinsics,
@@ -719,33 +690,6 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("depth_scale")=1.0f,
 			"set one of the training images. must be a floating point numpy array of (H,W,C) with 4 channels; linear color space; W and H must match image size of the rest of the dataset"
 		)
-		.def_readwrite("extrinsic_learning_rate_pos", &Testbed::Nerf::Training::extrinsic_learning_rate_pos)
-		.def_readwrite("extrinsic_learning_rate_rot", &Testbed::Nerf::Training::extrinsic_learning_rate_rot)
-		.def_readwrite("separate_pos_and_rot_lr", &Testbed::Nerf::Training::separate_pos_and_rot_lr)
-		.def_readwrite("ba_extrinsic_learning_rate_pos", &Testbed::Nerf::Training::ba_extrinsic_learning_rate_pos)
-		.def_readwrite("ba_extrinsic_learning_rate_rot", &Testbed::Nerf::Training::ba_extrinsic_learning_rate_rot)
-		.def_readonly("sampled_pixels_for_tracking", &Testbed::Nerf::Training::sampled_pixels_for_tracking)
-		.def_readonly("sampled_pixels_for_tracking_at_level", &Testbed::Nerf::Training::sampled_pixels_for_tracking_at_level)
-		.def_readonly("sampled_ray_indices_for_tracking_gradient", &Testbed::Nerf::Training::sampled_ray_indices_for_tracking_gradient)
-		.def_readwrite("rays_per_tracking_batch", &Testbed::Nerf::Training::rays_per_tracking_batch)
-		.def_readonly("tracking_gradients_super_rays", &Testbed::Nerf::Training::tracking_gradients_super_rays)
-		.def_readwrite("use_view_dir_in_nerf", &Testbed::Nerf::Training::use_view_dir_in_nerf)
-		.def_readwrite("train_with_image_confidence_scores", &Testbed::Nerf::Training::train_with_image_confidence_scores)
-		.def_readwrite("n_steps_between_confidence_scores_updates", &Testbed::Nerf::Training::n_steps_between_confidence_scores_updates)
-		.def_readwrite("image_confidence_scores_regularizer", &Testbed::Nerf::Training::image_confidence_scores_reg)
-		.def_readonly("image_confidence_values", &Testbed::Nerf::Training::image_confidence_values)
-		.def_readwrite("train_with_photometric_corrections_in_tracking", &Testbed::Nerf::Training::train_with_photometric_corrections_in_tracking)
-		.def_readwrite("image_photometric_correction_reg", &Testbed::Nerf::Training::image_photometric_correction_reg)
-		.def_readwrite("image_photometric_correction_lr", &Testbed::Nerf::Training::image_photometric_correction_lr)
-		.def_readwrite("n_steps_between_photometric_correction_updates", &Testbed::Nerf::Training::n_steps_between_photometric_correction_updates)
-		.def_readonly("image_photometric_correction_params_coef", &Testbed::Nerf::Training::image_photometric_correction_params_coef)
-		.def_readonly("image_photometric_correction_params_intercept", &Testbed::Nerf::Training::image_photometric_correction_params_intercept)
-		.def_readwrite("use_photometric_correction_in_mapping", &Testbed::Nerf::Training::use_photometric_correction_in_mapping)
-		//debug DBA
-		.def_readonly("xy_image_super_pixel_at_level_indices_int", &Testbed::Nerf::Training::xy_image_super_pixel_at_level_indices_int_cpu)
-		.def_readonly("xy_image_pixel_indices_int", &Testbed::Nerf::Training::xy_image_pixel_indices_int_cpu)
-		.def_readonly("image_ids", &Testbed::Nerf::Training::image_ids)
-		.def_readonly("reconstructed_rgbd_cpu", &Testbed::Nerf::Training::reconstructed_rgbd_cpu)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
@@ -775,7 +719,6 @@ PYBIND11_MODULE(pyngp, m) {
 	image
 		.def_readonly("training", &Testbed::Image::training)
 		.def_readwrite("random_mode", &Testbed::Image::random_mode)
-		.def_readwrite("pos", &Testbed::Image::pos)
 		;
 
 	py::class_<Testbed::Image::Training>(image, "Training")
