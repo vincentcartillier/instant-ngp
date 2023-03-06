@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -35,6 +35,7 @@
 #include <filesystem/path.h>
 
 #include <sophus/se3.hpp>
+#include <sophus/rotation_matrix.hpp>
 
 #include <testbed_nerf_utils.cu>
 
@@ -280,8 +281,8 @@ __global__ void composite_kernel_nerf(
 		payload.n_steps = j + current_step;
 	}
 
-	
-	
+
+
 	if (render_depth_var) {
 		float rec_depth = local_rgba.x();
 		float depth_var = 0.f;
@@ -298,11 +299,11 @@ __global__ void composite_kernel_nerf(
 			float weight = alpha * T;
 
 			float cur_depth = cam_fwd.dot(pos - origin) * depth_scale;
-        	
+
 			float tmp = (cur_depth - rec_depth) * (cur_depth - rec_depth);
 
         	depth_var += weight * tmp;
-			
+
 			T *= (1.f - alpha);
 		}
 
@@ -349,7 +350,7 @@ __global__ void generate_next_nerf_network_inputs(
 	float cone_angle = calc_cone_angle(dir.dot(camera_fwd), focal_length, cone_angle_constant);
 
 	float t = payload.t;
-	
+
 	Vector3f warp_dir;
 	if (use_view_dir) {
 		warp_dir = warp_direction(dir);
@@ -1342,7 +1343,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		lg = lg * score;
 		lg_depth = lg_depth * score;
 		depth_loss_gradient *= score;
-		
+
 		// compute gradient dl/du here
 		// float dldu = - loss_scale_rgb * lg.loss.sum() / 3.f - loss_scale_depth * depth_loss_gradient;
 		float dldu = - lg.loss.sum() / 3.f;
@@ -1415,10 +1416,10 @@ __global__ void compute_loss_kernel_train_nerf_slam(
     if (total_rays_depth > 0) {
         loss_scale_depth = loss_scale / float(total_rays_depth);
     }
-	
+
 	// float loss_scale_rgb = loss_scale / n_rays;
     // float loss_scale_depth = loss_scale / n_rays;
-	
+
 	const float output_l2_reg = rgb_activation == ENerfActivation::Exponential ? 1e-4f : 0.0f;
 	const float output_l1_reg_density = *mean_density_ptr < NERF_MIN_OPTICAL_THICKNESS() ? 1e-4f : 0.0f;
 
@@ -1834,7 +1835,7 @@ __global__ void compute_loss_kernel_train_nerf(
 			rgbtarget = background_color;
 		}
 	}
-	
+
 	if (compacted_numsteps == numsteps) {
 		// support arbitrary background colors
 		rgb_ray += T * background_color;
@@ -2929,7 +2930,7 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 	if (transforms.size() < last) {
 		transforms.resize(last);
 	}
-	
+
 
 	for (uint32_t i = 0; i < n; ++i) {
 		auto xform = dataset.xforms[i + first];
@@ -2941,15 +2942,21 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 		Vector<float,6> tangent {tra.x(), tra.y(), tra.z(), rot.x(), rot.y(), rot.z()};
 		Sophus::SE3f dx = Sophus::SE3f().exp(tangent);
 
-		//NOTE: start	
+		//NOTE: start
 		//Vector3f e_start_t = {xform.start(0, 3), xform.start(1, 3), xform.start(2, 3)};
 		Vector3f e_start_t = xform.start.block<3, 1>(0, 3);
 		Matrix3f e_start_R = xform.start.block<3, 3>(0, 0);
-		float det_e_start_R = e_start_R.determinant();
-		if (std::abs(det_e_start_R - 1.0f) > 0.00000001f) {
-			tlog::warning()<<" determinant of rotation matrix is not exactly 1. | "<<det_e_start_R<< " --> normalizing the rotation matrix";
-			e_start_R /= std::cbrt(det_e_start_R);
+		// float det_e_start_R = e_start_R.determinant();
+		// if (std::abs(det_e_start_R - 1.0f) > 0.00000001f) {
+		// 	tlog::warning()<<" determinant of rotation matrix is not exactly 1. | "<<det_e_start_R<< " --> normalizing the rotation matrix";
+		// 	e_start_R /= std::cbrt(det_e_start_R);
+		// }
+		//bool valid = Sophus::isOrthogonal(e_start_R);
+		bool valid = Sophus::isScaledOrthogonalAndPositive(e_start_R);
+		if (~valid) {
+			e_start_R = Sophus::makeRotationMatrix(e_start_R);
 		}
+
 		Sophus::SE3f start_T = Sophus::SE3f(e_start_R, e_start_t);
 		Sophus::SE3f new_start_T = dx * start_T;
 
@@ -2961,12 +2968,16 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 		//NOTE: end
 		Vector3f e_end_t = xform.end.block<3, 1>(0, 3);
 		Matrix3f e_end_R = xform.end.block<3, 3>(0, 0);
-		float det_e_end_R = e_end_R.determinant();
-		if (std::abs(det_e_end_R - 1.0f) > 0.00000001f) {
-			tlog::warning()<<" determinant of rotation matrix is not exactly 1. | "<<det_e_end_R<< " --> normalizing the rotation matrix";
-			e_end_R /= std::cbrt(det_e_end_R);
+		// float det_e_end_R = e_end_R.determinant();
+		// if (std::abs(det_e_end_R - 1.0f) > 0.00000001f) {
+		// 	tlog::warning()<<" determinant of rotation matrix is not exactly 1. | "<<det_e_end_R<< " --> normalizing the rotation matrix";
+		// 	e_end_R /= std::cbrt(det_e_end_R);
+		// }
+		valid = Sophus::isScaledOrthogonalAndPositive(e_end_R);
+		if (~valid) {
+			e_end_R = Sophus::makeRotationMatrix(e_end_R);
 		}
-	
+
 		Sophus::SE3f end_T = Sophus::SE3f(e_end_R, e_end_t);
 		Sophus::SE3f new_end_T = dx * end_T;
 
@@ -2974,7 +2985,6 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 		Matrix3f new_end_R = new_end_T.so3().matrix();
 		xform.end.block<3, 3>(0, 0) = new_end_R;
 		xform.end.block<3, 1>(0, 3) = new_end_t;
-
 
 		// if (angle > 0) {
 		// 	xform.start.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform.start.block<3, 3>(0, 0);
@@ -3001,7 +3011,7 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 	if (m_nerf.training.train_with_image_confidence_scores) {
 		ArrayXf zero = ArrayXf::Zero(1);
 		m_nerf.training.image_confidence_scores.resize(
-			n_images, 
+			n_images,
 			AdamOptimizer<ArrayXf>(1e-4f, zero)
 		);
 		m_nerf.training.image_confidence_gradient.resize(n_images);
@@ -3017,12 +3027,12 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 	if (m_nerf.training.train_with_photometric_corrections_in_mapping || m_nerf.training.train_with_photometric_corrections_in_tracking) {
 		ArrayXf zero = ArrayXf::Zero(1);
 		m_nerf.training.image_photometric_correction_variables_intercept.resize(
-			n_images, 
+			n_images,
 			AdamOptimizer<ArrayXf>(1e-4f, zero)
 		);
 		ArrayXf one = ArrayXf::Constant(1, 1.0f);
 		m_nerf.training.image_photometric_correction_variables_coef.resize(
-			n_images, 
+			n_images,
 			AdamOptimizer<ArrayXf>(1e-4f, one)
 		);
 		m_nerf.training.image_photometric_correction_gradient_coef.resize(n_images);
@@ -4092,21 +4102,21 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_focal_length_gradient_gpu.data(), 0, m_nerf.training.cam_focal_length_gradient_gpu.get_bytes(), stream));
 	}
 
-	if (m_nerf.training.n_steps_since_confidence_scores_update==0 && 
+	if (m_nerf.training.n_steps_since_confidence_scores_update==0 &&
 	    m_nerf.training.train_with_image_confidence_scores) {
 		CUDA_CHECK_THROW(
 			cudaMemsetAsync(
-				m_nerf.training.image_confidence_gradient_gpu.data(), 
-				0, 
-				m_nerf.training.image_confidence_gradient_gpu.get_bytes(), 
+				m_nerf.training.image_confidence_gradient_gpu.data(),
+				0,
+				m_nerf.training.image_confidence_gradient_gpu.get_bytes(),
 				stream
 			)
 		);
 		CUDA_CHECK_THROW(
 			cudaMemsetAsync(
-				m_nerf.training.image_confidence_gradient_ray_count_gpu.data(), 
-				0, 
-				m_nerf.training.image_confidence_gradient_ray_count_gpu.get_bytes(), 
+				m_nerf.training.image_confidence_gradient_ray_count_gpu.data(),
+				0,
+				m_nerf.training.image_confidence_gradient_ray_count_gpu.get_bytes(),
 				stream
 			)
 		);
@@ -4133,9 +4143,8 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 		CUDA_CHECK_THROW(cudaMemsetAsync(envmap_gradient, 0, sizeof(float)*m_envmap.envmap->n_params(), stream));
 	}
 
-
 	train_nerf_slam_step(target_batch_size, m_nerf.training.counters_rgb, stream);
-	
+
 	m_trainer->optimizer_step(stream, LOSS_SCALE);
 
 	++m_training_step;
@@ -4248,27 +4257,27 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.extra_dims_gpu.data(), extra_dims_new_values.data(), m_nerf.training.n_images_for_training * n_extra_dims * sizeof(float) , cudaMemcpyHostToDevice, stream));
 	}
 
-	
+
 	if (m_nerf.training.train_with_image_confidence_scores) {
-		
+
 		m_nerf.training.n_steps_since_confidence_scores_update += 1;
 
 		if (m_nerf.training.n_steps_since_confidence_scores_update >= m_nerf.training.n_steps_between_confidence_scores_updates) {
 			// float per_camera_loss_scale = 10.f / LOSS_SCALE / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
 			// float per_camera_loss_scale = 1.0f / (float)m_nerf.training.n_steps_between_confidence_scores_updates;
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_confidence_gradient.data(), 
-							    m_nerf.training.image_confidence_gradient_gpu.data(), 
-								m_nerf.training.image_confidence_gradient_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_confidence_gradient.data(),
+							    m_nerf.training.image_confidence_gradient_gpu.data(),
+								m_nerf.training.image_confidence_gradient_gpu.get_bytes(),
 								cudaMemcpyDeviceToHost, stream)
 			);
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_confidence_gradient_ray_count.data(), 
-							    m_nerf.training.image_confidence_gradient_ray_count_gpu.data(), 
-								m_nerf.training.image_confidence_gradient_ray_count_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_confidence_gradient_ray_count.data(),
+							    m_nerf.training.image_confidence_gradient_ray_count_gpu.data(),
+								m_nerf.training.image_confidence_gradient_ray_count_gpu.get_bytes(),
 								cudaMemcpyDeviceToHost, stream)
 			);
-			
+
 			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
 
 			uint32_t all_ray_cpt = std::accumulate(
@@ -4278,13 +4287,13 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 			);
 
 			for (uint32_t k = 0; k < m_nerf.training.n_images_for_training_slam; ++k) {
-				
+
             	uint32_t i = m_nerf.training.idx_images_for_training_slam[k];
 
 				uint32_t ray_cpt = m_nerf.training.image_confidence_gradient_ray_count[i];
 
 				if (ray_cpt > 0){
-					
+
 					// float conf_grad = m_nerf.training.image_confidence_gradient[i] / ( LOSS_SCALE * (float)ray_cpt );
 					float conf_grad = m_nerf.training.image_confidence_gradient[i] / (float)ray_cpt;
 					// float conf_grad = m_nerf.training.image_confidence_gradient[i] / (float)all_ray_cpt;
@@ -4295,7 +4304,7 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 					//TODO: add regularizer
 					float reg_coef = m_nerf.training.image_confidence_scores_reg;
 					image_conf_gradient += reg_coef;
-					
+
 					// tlog::info()<<" ray cpt: "<< ray_cpt<< " | grad_raw = "<<m_nerf.training.image_confidence_gradient[i]<< " | grad normed= "<< conf_grad<< " | grad+reg= " << image_conf_gradient[0];
 
 					//TODO: set better LR
@@ -4307,11 +4316,11 @@ void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, 
 					m_nerf.training.image_confidence_values[i] = m_nerf.training.image_confidence_scores[i].variable()[0];
 				}
 			}
-			
+
 			CUDA_CHECK_THROW(
-				cudaMemcpyAsync(m_nerf.training.image_confidence_values_gpu.data(), 
-							    m_nerf.training.image_confidence_values.data(), 
-								m_nerf.training.image_confidence_values_gpu.get_bytes(), 
+				cudaMemcpyAsync(m_nerf.training.image_confidence_values_gpu.data(),
+							    m_nerf.training.image_confidence_values.data(),
+								m_nerf.training.image_confidence_values_gpu.get_bytes(),
 								cudaMemcpyHostToDevice, stream)
 			);
 

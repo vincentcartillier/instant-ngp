@@ -444,8 +444,22 @@ public:
     );
 	void set_nerf_model_learning_rate(const nlohmann::json& params);
 	float get_nerf_model_learning_rate();
+	
+	
+	nlohmann::json get_nerf_trainer_params();
+	void set_nerf_trainer_params(const nlohmann::json& params);
+
+	
+	nlohmann::json get_nerf_optimizer_params();
+	void set_nerf_optimizer_params(const nlohmann::json& params);
 
 
+	// Function gradient / (ie) image gradient / (ie) d_f(u,v) / d_uv
+    std::vector<uint32_t> xy_gradient_image_indices_int_cpu;
+    std::vector<float> gradient_image_grads_values_cpu;
+	void compute_image_gradient(uint32_t image_id, uint32_t target_batch_size);
+	void sample_all_pixels(std::vector<float>& xy_image_pixel_indices,std::vector<uint32_t>& xy_image_pixel_indices_int,const Eigen::Vector2i& resolution);
+	void compute_image_gradient_nerf(uint32_t image_id, uint32_t target_batch_size, cudaStream_t stream);
 
 
     void train_sdf(size_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -774,9 +788,6 @@ public:
     		std::vector<uint32_t> xy_image_pixel_indices_int_cpu;
     		std::vector<uint32_t> image_ids;
     		std::vector<float> reconstructed_rgbd_cpu;
-
-
-
 
 			tcnn::GPUMemory<float> extra_dims_gpu; // if the model demands a latent code per training image, we put them in here.
 			tcnn::GPUMemory<float> extra_dims_gradient_gpu;

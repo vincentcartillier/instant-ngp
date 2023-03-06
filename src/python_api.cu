@@ -570,6 +570,13 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("crop_box_corners", &Testbed::crop_box_corners, py::arg("nerf_space") = true)
 		.def("set_nerf_learning_rate", &Testbed::set_nerf_model_learning_rate, py::arg("params"))
 		.def("get_nerf_learning_rate", &Testbed::get_nerf_model_learning_rate)
+		.def("get_nerf_trainer_params", &Testbed::get_nerf_trainer_params)
+		.def("set_nerf_trainer_params", &Testbed::set_nerf_trainer_params, py::arg("params"))
+		.def("get_nerf_optimizer_params", &Testbed::get_nerf_optimizer_params)
+		.def("set_nerf_optimizer_params", &Testbed::set_nerf_optimizer_params, py::arg("params"))
+		.def_readonly("gradient_image_xy_indices_int", &Testbed::xy_gradient_image_indices_int_cpu)
+		.def_readonly("gradient_image_grads_values", &Testbed::gradient_image_grads_values_cpu)
+		.def("compute_image_gradient", &Testbed::compute_image_gradient, py::call_guard<py::gil_scoped_release>(), "Compute the derivative of the nerf wrt the uv image locations.")
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -650,8 +657,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("from_mitsuba", &NerfDataset::from_mitsuba)
 		.def_readonly("is_hdr", &NerfDataset::is_hdr)
 		.def_readwrite("wants_importance_sampling", &NerfDataset::wants_importance_sampling)
-		.def("get_poses_ngp", &NerfDataset::get_poses_ngp, "Return an array with all the camera poses as stored in NGP (Nx4x4)"
-        )
+		.def("get_poses_ngp", &NerfDataset::get_poses_ngp, "Return an array with all the camera poses as stored in NGP (Nx4x4)")
+		.def_readonly("n_extra_learnable_dims", &NerfDataset::n_extra_learnable_dims)
 		;
 
 	py::class_<Testbed::Nerf::Training>(nerf, "Training")
@@ -746,6 +753,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("xy_image_pixel_indices_int", &Testbed::Nerf::Training::xy_image_pixel_indices_int_cpu)
 		.def_readonly("image_ids", &Testbed::Nerf::Training::image_ids)
 		.def_readonly("reconstructed_rgbd_cpu", &Testbed::Nerf::Training::reconstructed_rgbd_cpu)
+		.def_readwrite("train_envmap", &Testbed::Nerf::Training::train_envmap)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

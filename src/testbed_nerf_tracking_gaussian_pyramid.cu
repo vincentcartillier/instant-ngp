@@ -84,7 +84,9 @@ __global__ void generate_training_samples_for_tracking_gp(
 
 	mapping_indices[i] = -1; //  default to "not existing"
 
-    if (existing_ray_mapping_gpu[i]!=i) return;
+	if (existing_ray_mapping_gpu){
+    	if (existing_ray_mapping_gpu[i]!=i) return;
+	}
 
 	uint32_t img;
 	if (image_ids) {
@@ -877,7 +879,12 @@ __global__ void compute_gradient_gp(
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) { return; }
 
-    uint32_t prev_i = existing_ray_mapping_gpu[i];
+    uint32_t prev_i;
+	if (existing_ray_mapping_gpu) {
+    	prev_i = existing_ray_mapping_gpu[i];
+	} else {
+    	prev_i = i;
+	}
 
     int32_t ray_idx = mapping_indices[prev_i];
 
@@ -1137,6 +1144,8 @@ __global__ void compute_camera_gradient_gp(
 		}
 	}
 }
+
+
 
 void Testbed::sample_pixels_for_tracking_with_gaussian_pyramid(
     const uint32_t max_rays_per_batch,
@@ -1475,15 +1484,15 @@ void Testbed::track_pose_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, 
                 rot_gradient.z() = 0.f;
             }
 
-            float max_step_pos = 10;
-            float max_step_rot = 10;
-            pos_gradient.x() = max( -max_step_pos, min(pos_gradient.x(), max_step_pos) );
-            pos_gradient.y() = max( -max_step_pos, min(pos_gradient.y(), max_step_pos) );
-            pos_gradient.z() = max( -max_step_pos, min(pos_gradient.z(), max_step_pos) );
+            // float max_step_pos = 10;
+            // float max_step_rot = 10;
+            // pos_gradient.x() = max( -max_step_pos, min(pos_gradient.x(), max_step_pos) );
+            // pos_gradient.y() = max( -max_step_pos, min(pos_gradient.y(), max_step_pos) );
+            // pos_gradient.z() = max( -max_step_pos, min(pos_gradient.z(), max_step_pos) );
 
-            rot_gradient.x() = max( -max_step_rot, min(rot_gradient.x(), max_step_rot) );
-            rot_gradient.y() = max( -max_step_rot, min(rot_gradient.y(), max_step_rot) );
-            rot_gradient.z() = max( -max_step_rot, min(rot_gradient.z(), max_step_rot) );
+            // rot_gradient.x() = max( -max_step_rot, min(rot_gradient.x(), max_step_rot) );
+            // rot_gradient.y() = max( -max_step_rot, min(rot_gradient.y(), max_step_rot) );
+            // rot_gradient.z() = max( -max_step_rot, min(rot_gradient.z(), max_step_rot) );
 
             float norm_pos = pos_gradient.norm();
             float norm_rot = rot_gradient.norm();
@@ -2195,6 +2204,27 @@ void Testbed::set_nerf_model_learning_rate(const json& params){
 
 
 
+json Testbed::get_nerf_trainer_params(){
+	json hyperparams = m_trainer->hyperparams();
+	return hyperparams;
+}
+void Testbed::set_nerf_trainer_params(const json& params){
+	m_trainer->update_hyperparams(params);
+}
+
+json Testbed::get_nerf_optimizer_params(){
+	//json hyperparams = m_optimizer->hyperparams();
+	json hyperparams = m_optimizer->hyperparams();
+	return hyperparams;
+}
+void Testbed::set_nerf_optimizer_params(const json& params){
+	//m_optimizer->update_hyperparams(params);
+	m_optimizer->update_hyperparams(params);
+}
+
+
+
+
 
 void Testbed::bundle_adjustment_gaussian_pyramid_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream, bool motion_only) {
 
@@ -2252,7 +2282,8 @@ void Testbed::bundle_adjustment_gaussian_pyramid_nerf_slam(uint32_t target_batch
 
 	if (m_nerf.training.n_steps_since_cam_update_ba >= m_nerf.training.n_steps_between_cam_updates_ba) {
 
-		float per_camera_loss_scale = 1.0 / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates_ba;
+		//float per_camera_loss_scale = 1.0 / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates_ba;
+		float per_camera_loss_scale = (float)m_nerf.training.idx_images_for_training_slam_pose.size() / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates;
 
 		{
 			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
@@ -2282,8 +2313,8 @@ void Testbed::bundle_adjustment_gaussian_pyramid_nerf_slam(uint32_t target_batch
 
 						m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_pos * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
 						m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(m_nerf.training.ba_extrinsic_learning_rate_rot * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
-						// m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_pos);
-						// m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_rot);
+						//m_nerf.training.cam_pos_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_pos);
+						//m_nerf.training.cam_rot_offset[i].set_learning_rate(m_nerf.training.ba_extrinsic_learning_rate_rot);
 
 
 						m_nerf.training.cam_pos_offset[i].step(pos_gradient);
@@ -2292,14 +2323,14 @@ void Testbed::bundle_adjustment_gaussian_pyramid_nerf_slam(uint32_t target_batch
     	            	m_nerf.training.update_transforms(i, i+1);
 
 						m_nerf.training.ray_counter_per_image[i] = 0;
-						m_nerf.training.cam_pos_gradient[i] = Vector3f::Zero(3);
-						m_nerf.training.cam_rot_gradient[i] = Vector3f::Zero(3);
+						// m_nerf.training.cam_pos_gradient[i] = Vector3f::Zero(3);
+						// m_nerf.training.cam_rot_gradient[i] = Vector3f::Zero(3);
 					}
 				}
 			}
 
-			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
-			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
+			// CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
+			// CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
 
 		}
 
@@ -2889,13 +2920,5 @@ void Testbed::bundle_adjustment_gaussian_pyramid_nerf_slam_step(uint32_t target_
 	m_rng.advance();
 
 }
-
-
-
-
-
-
-
-
 
 NGP_NAMESPACE_END
