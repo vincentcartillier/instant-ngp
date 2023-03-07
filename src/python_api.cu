@@ -567,6 +567,7 @@ PYBIND11_MODULE(pyngp, m) {
 			[](py::object& obj) { return obj.cast<Testbed&>().root_dir().str(); },
 			[](const py::object& obj, const std::string& value) { obj.cast<Testbed&>().m_root_dir = value; }
 		)
+		.def_readwrite("relative_focal_length", &Testbed::m_relative_focal_length)
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -635,7 +636,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("n_images", &NerfDataset::n_images)
 		.def_readonly("envmap_resolution", &NerfDataset::envmap_resolution)
 		.def_readonly("scale", &NerfDataset::scale)
-		.def_readonly("aabb_scale", &NerfDataset::aabb_scale)
+		.def_readwrite("aabb_scale", &NerfDataset::aabb_scale)
+		.def_readwrite("desired_resolution", &NerfDataset::desired_resolution)
 		.def_readonly("from_mitsuba", &NerfDataset::from_mitsuba)
 		.def_readonly("is_hdr", &NerfDataset::is_hdr)
 		;

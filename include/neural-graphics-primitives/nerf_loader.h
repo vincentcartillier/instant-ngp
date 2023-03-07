@@ -90,6 +90,7 @@ struct NerfDataset {
 	ivec2 envmap_resolution = {0, 0};
 	float scale = 1.0f;
 	int aabb_scale = 1;
+	uint32_t desired_resolution = 2048;
 	bool from_mitsuba = false;
 	bool is_hdr = false;
 	bool wants_importance_sampling = true;
