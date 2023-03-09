@@ -4296,7 +4296,7 @@ void Testbed::render_frame_main(
 
 	vec2 focal_length = calc_focal_length(device.render_buffer_view().resolution, relative_focal_length, m_fov_axis, m_zoom);
 	vec2 screen_center = render_screen_center(orig_screen_center);
-
+	
 	switch (m_testbed_mode) {
 		case ETestbedMode::Nerf:
 			if (!m_render_ground_truth || m_ground_truth_alpha < 1.0f) {

@@ -3120,7 +3120,9 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
 
 			// Optimization step
-			for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+			for (uint32_t k = 0; k < m_nerf.training.idx_images_for_training_extrinsics.size(); ++k) {
+				uint32_t i = m_nerf.training.idx_images_for_training_extrinsics[k];
+				
 				vec3 pos_gradient = m_nerf.training.cam_pos_gradient[i] * per_camera_loss_scale;
 				vec3 rot_gradient = m_nerf.training.cam_rot_gradient[i] * per_camera_loss_scale;
 

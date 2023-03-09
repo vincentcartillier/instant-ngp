@@ -632,10 +632,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("render_aabb", &NerfDataset::render_aabb)
 		.def_readonly("render_aabb_to_local", &NerfDataset::render_aabb_to_local)
 		.def_readonly("up", &NerfDataset::up)
-		.def_readonly("offset", &NerfDataset::offset)
+		.def_readwrite("offset", &NerfDataset::offset)
 		.def_readonly("n_images", &NerfDataset::n_images)
 		.def_readonly("envmap_resolution", &NerfDataset::envmap_resolution)
-		.def_readonly("scale", &NerfDataset::scale)
+		.def_readwrite("scale", &NerfDataset::scale)
 		.def_readwrite("aabb_scale", &NerfDataset::aabb_scale)
 		.def_readwrite("desired_resolution", &NerfDataset::desired_resolution)
 		.def_readonly("from_mitsuba", &NerfDataset::from_mitsuba)
@@ -692,6 +692,7 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("depth_scale")=1.0f,
 			"set one of the training images. must be a floating point numpy array of (H,W,C) with 4 channels; linear color space; W and H must match image size of the rest of the dataset"
 		)
+		.def_readwrite("idx_images_for_training_extrinsics", &Testbed::Nerf::Training::idx_images_for_training_extrinsics)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
