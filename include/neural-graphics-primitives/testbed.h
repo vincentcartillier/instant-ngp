@@ -637,8 +637,6 @@ public:
 			int n_images_for_training = 0; // how many images to train from, as a high watermark compared to the dataset size
 			int n_images_for_training_prev = 0; // how many images we saw last time we updated the density grid
 
-			std::vector<uint32_t> idx_images_for_training_extrinsics;
-
 			struct ErrorMap {
 				tcnn::GPUMemory<float> data;
 				tcnn::GPUMemory<float> cdf_x_cond_y;
@@ -731,6 +729,20 @@ public:
 
 			void reset_camera_extrinsics();
 			void export_camera_extrinsics(const fs::path& path, bool export_extrinsics_in_quat_format = true);
+
+			/*
+			########################################################################################################################
+			########################################################################################################################
+			########################################################################################################################
+			########################################################################################################################
+			*/
+			std::vector<uint32_t> idx_images_for_training_extrinsics;
+
+			// SLAM
+			std::vector<uint32_t> idx_images_for_mapping;
+			tcnn::GPUMemory<uint32_t> idx_images_for_mapping_gpu;
+
+
 		} training = {};
 
 		tcnn::GPUMemory<float> density_grid; // NERF_GRIDSIZE()^3 grid of EMA smoothed densities from the network
@@ -763,6 +775,28 @@ public:
 		int glow_mode = 0;
 
 	} m_nerf;
+
+	/*
+
+		##############################################################################################
+		##############################################################################################
+
+				SLAM related tools
+
+		##############################################################################################
+		##############################################################################################
+
+	*/
+	void map(uint32_t batch_size);
+	void train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	
+	/*
+		##############################################################################################
+		##############################################################################################
+	*/
+
+
 
 	struct Sdf {
 		float shadow_sharpness = 2048.0f;

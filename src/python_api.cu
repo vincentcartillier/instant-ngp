@@ -568,6 +568,7 @@ PYBIND11_MODULE(pyngp, m) {
 			[](const py::object& obj, const std::string& value) { obj.cast<Testbed&>().m_root_dir = value; }
 		)
 		.def_readwrite("relative_focal_length", &Testbed::m_relative_focal_length)
+		.def("map", &Testbed::map, py::call_guard<py::gil_scoped_release>(), "Perform SLAM mapping iteration.")
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -693,6 +694,8 @@ PYBIND11_MODULE(pyngp, m) {
 			"set one of the training images. must be a floating point numpy array of (H,W,C) with 4 channels; linear color space; W and H must match image size of the rest of the dataset"
 		)
 		.def_readwrite("idx_images_for_training_extrinsics", &Testbed::Nerf::Training::idx_images_for_training_extrinsics)
+		.def_readwrite("idx_images_for_mapping", &Testbed::Nerf::Training::idx_images_for_mapping)
+		.def_readwrite("n_steps_since_error_map_update", &Testbed::Nerf::Training::n_steps_since_error_map_update)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
