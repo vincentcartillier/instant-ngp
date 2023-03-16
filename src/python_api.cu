@@ -532,6 +532,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("visualized_layer", &Testbed::m_visualized_layer)
 		.def_property_readonly("loss", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar.val(); })
 		.def_readonly("training_step", &Testbed::m_training_step)
+		.def_readonly("tracking_step", &Testbed::m_tracking_step)
 		.def_readonly("nerf", &Testbed::m_nerf)
 		.def_readonly("sdf", &Testbed::m_sdf)
 		.def_readonly("image", &Testbed::m_image)
@@ -569,6 +570,7 @@ PYBIND11_MODULE(pyngp, m) {
 		)
 		.def_readwrite("relative_focal_length", &Testbed::m_relative_focal_length)
 		.def("map", &Testbed::map, py::call_guard<py::gil_scoped_release>(), "Perform SLAM mapping iteration.")
+		.def("track", &Testbed::track, py::call_guard<py::gil_scoped_release>(), "Perform SLAM tracking iteration.")
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -696,6 +698,13 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("idx_images_for_training_extrinsics", &Testbed::Nerf::Training::idx_images_for_training_extrinsics)
 		.def_readwrite("idx_images_for_mapping", &Testbed::Nerf::Training::idx_images_for_mapping)
 		.def_readwrite("n_steps_since_error_map_update", &Testbed::Nerf::Training::n_steps_since_error_map_update)
+		.def_readwrite("n_steps_since_cam_update", &Testbed::Nerf::Training::n_steps_since_cam_update)
+		.def_readwrite("indice_image_for_tracking_pose", &Testbed::Nerf::Training::indice_image_for_tracking_pose)
+		.def_readwrite("sample_away_from_border_margin_h_mapping", &Testbed::Nerf::Training::m_sample_away_from_border_margin_h_mapping)
+		.def_readwrite("sample_away_from_border_margin_w_mapping", &Testbed::Nerf::Training::m_sample_away_from_border_margin_w_mapping)
+		.def_readwrite("sample_away_from_border_margin_h_tracking", &Testbed::Nerf::Training::m_sample_away_from_border_margin_h_tracking)
+		.def_readwrite("sample_away_from_border_margin_w_tracking", &Testbed::Nerf::Training::m_sample_away_from_border_margin_w_tracking)
+		.def_readwrite("use_depth_var_in_tracking_loss", &Testbed::Nerf::Training::use_depth_var_in_tracking_loss)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

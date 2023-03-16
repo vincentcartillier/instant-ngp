@@ -737,10 +737,19 @@ public:
 			########################################################################################################################
 			*/
 			std::vector<uint32_t> idx_images_for_training_extrinsics;
+			uint32_t m_sample_away_from_border_margin_h_mapping = 0;
+			uint32_t m_sample_away_from_border_margin_w_mapping = 0;
 
 			// SLAM
 			std::vector<uint32_t> idx_images_for_mapping;
 			tcnn::GPUMemory<uint32_t> idx_images_for_mapping_gpu;
+
+			uint32_t indice_image_for_tracking_pose=0;
+			uint32_t m_sample_away_from_border_margin_h_tracking = 0;
+			uint32_t m_sample_away_from_border_margin_w_tracking = 0;
+
+			bool use_depth_var_in_tracking_loss = false;
+
 
 
 		} training = {};
@@ -791,6 +800,17 @@ public:
 	void train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 	
+	void track(uint32_t batch_size);
+	void train_nerf_slam_tracking(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
+	void train_nerf_slam_tracking_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	
+	uint32_t m_tracking_step = 0;
+	// == DEBUG
+	// == DEBUG
+
+	// == DEBUG
+	// == DEBUG
+
 	/*
 		##############################################################################################
 		##############################################################################################
