@@ -750,6 +750,8 @@ public:
 
 			bool use_depth_var_in_tracking_loss = false;
 
+			NerfCounters counters_rgb_tracking;
+			uint32_t m_target_num_rays_for_tracking = 2048;
 
 
 		} training = {};
@@ -803,11 +805,43 @@ public:
 	void track(uint32_t batch_size);
 	void train_nerf_slam_tracking(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_tracking_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	void train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream);
+	
+	std::vector<float> make_5tap_kernel();
+	void get_receptive_field_of_gaussian_pyramid_at_level(uint32_t level, std::vector<int>& rf);
+	void sample_pixels_for_tracking_with_gaussian_pyramid(
+        const uint32_t max_rays_per_batch,
+        uint32_t& ray_counter,
+        uint32_t& super_ray_counter,
+        uint32_t& ray_counter_for_gradient,
+        std::vector<float>& xy_image_pixel_indices,
+        std::vector<uint32_t>& xy_image_pixel_indices_int,
+        std::vector<uint32_t>& xy_image_super_pixel_at_level_indices_int_cpu,
+        std::vector<uint32_t>& ray_mapping,
+        const bool snap_to_pixel_centers,
+        const uint32_t sample_away_from_border_margin_h,
+        const uint32_t sample_away_from_border_margin_w,
+        default_rng_t& rng,
+        const std::vector<int>& rf,
+        const uint32_t& super_ray_window_size,
+        const uint32_t& ray_stride,
+        const ivec2& resolution,
+        const ivec2& resolution_at_level,
+        const uint32_t& level
+    );
 	
 	uint32_t m_tracking_step = 0;
-	// == DEBUG
-	// == DEBUG
+	uint32_t m_tracking_gaussian_pyramid_level=0;
+	uint32_t m_tracking_mode = 0; // { 0: default, 1: using GP }
+	
 
+	// == DEBUG
+	// == DEBUG
+	uint32_t m_n_super_rays=0;
+	uint32_t m_n_total_rays=0;
+	uint32_t m_n_total_rays_for_gradient=0;
+	std::vector<uint32_t> m_xy_image_pixel_indices_int;
+	std::vector<uint32_t> m_existing_ray_mapping;
 	// == DEBUG
 	// == DEBUG
 

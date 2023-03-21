@@ -571,6 +571,17 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("relative_focal_length", &Testbed::m_relative_focal_length)
 		.def("map", &Testbed::map, py::call_guard<py::gil_scoped_release>(), "Perform SLAM mapping iteration.")
 		.def("track", &Testbed::track, py::call_guard<py::gil_scoped_release>(), "Perform SLAM tracking iteration.")
+		.def_readwrite("tracking_gaussian_pyramid_level", &Testbed::m_tracking_gaussian_pyramid_level)
+		.def_readwrite("tracking_mode", &Testbed::m_tracking_mode)
+		//DEBUG
+		//DEBUG
+		.def_readonly("n_super_rays", &Testbed::m_n_super_rays)
+		.def_readonly("n_total_rays", &Testbed::m_n_total_rays)
+		.def_readonly("n_total_rays_for_gradient", &Testbed::m_n_total_rays_for_gradient)
+		.def_readonly("xy_image_pixel_indices_int", &Testbed::m_xy_image_pixel_indices_int)
+		.def_readonly("existing_ray_mapping", &Testbed::m_existing_ray_mapping)
+		//DEBUG
+		//DEBUG
 		;
 
 	py::class_<Lens> lens(m, "Lens");
@@ -705,6 +716,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("sample_away_from_border_margin_h_tracking", &Testbed::Nerf::Training::m_sample_away_from_border_margin_h_tracking)
 		.def_readwrite("sample_away_from_border_margin_w_tracking", &Testbed::Nerf::Training::m_sample_away_from_border_margin_w_tracking)
 		.def_readwrite("use_depth_var_in_tracking_loss", &Testbed::Nerf::Training::use_depth_var_in_tracking_loss)
+		.def_readwrite("target_num_rays_for_tracking", &Testbed::Nerf::Training::m_target_num_rays_for_tracking)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
