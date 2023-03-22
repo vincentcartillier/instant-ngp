@@ -533,6 +533,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_property_readonly("loss", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar.val(); })
 		.def_readonly("training_step", &Testbed::m_training_step)
 		.def_readonly("tracking_step", &Testbed::m_tracking_step)
+		.def_readonly("ba_step", &Testbed::m_ba_step)
 		.def_readonly("nerf", &Testbed::m_nerf)
 		.def_readonly("sdf", &Testbed::m_sdf)
 		.def_readonly("image", &Testbed::m_image)
@@ -571,8 +572,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("relative_focal_length", &Testbed::m_relative_focal_length)
 		.def("map", &Testbed::map, py::call_guard<py::gil_scoped_release>(), "Perform SLAM mapping iteration.")
 		.def("track", &Testbed::track, py::call_guard<py::gil_scoped_release>(), "Perform SLAM tracking iteration.")
+		.def("ba", &Testbed::bundle_adjustment, py::call_guard<py::gil_scoped_release>(), "Perform SLAM bundle adjustment iteration.")
 		.def_readwrite("tracking_gaussian_pyramid_level", &Testbed::m_tracking_gaussian_pyramid_level)
 		.def_readwrite("tracking_mode", &Testbed::m_tracking_mode)
+		.def_readwrite("ba_mode", &Testbed::m_ba_mode)
 		.def("set_max_level", &Testbed::set_max_level, py::arg("maxlevel"))
 		.def_readwrite("tracking_max_grid_level", &Testbed::m_tracking_max_grid_level)
 		.def_readwrite("max_grid_level_factor", &Testbed::m_max_grid_level_factor)
@@ -720,6 +723,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("sample_away_from_border_margin_w_tracking", &Testbed::Nerf::Training::m_sample_away_from_border_margin_w_tracking)
 		.def_readwrite("use_depth_var_in_tracking_loss", &Testbed::Nerf::Training::use_depth_var_in_tracking_loss)
 		.def_readwrite("target_num_rays_for_tracking", &Testbed::Nerf::Training::m_target_num_rays_for_tracking)
+		.def_readwrite("target_num_rays_for_ba", &Testbed::Nerf::Training::m_target_num_rays_for_ba)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");

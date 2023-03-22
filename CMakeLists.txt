@@ -279,6 +279,7 @@ list(APPEND NGP_SOURCES
 	src/triangle_bvh.cu
 	src/testbed_nerf_slam_tracking.cu
 	src/testbed_nerf_slam_mapping.cu
+	src/testbed_nerf_slam_bundle_adjustment.cu
 )
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
