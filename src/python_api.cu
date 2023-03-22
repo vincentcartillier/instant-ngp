@@ -573,6 +573,9 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("track", &Testbed::track, py::call_guard<py::gil_scoped_release>(), "Perform SLAM tracking iteration.")
 		.def_readwrite("tracking_gaussian_pyramid_level", &Testbed::m_tracking_gaussian_pyramid_level)
 		.def_readwrite("tracking_mode", &Testbed::m_tracking_mode)
+		.def("set_max_level", &Testbed::set_max_level, py::arg("maxlevel"))
+		.def_readwrite("tracking_max_grid_level", &Testbed::m_tracking_max_grid_level)
+		.def_readwrite("max_grid_level_factor", &Testbed::m_max_grid_level_factor)
 		//DEBUG
 		//DEBUG
 		.def_readonly("n_super_rays", &Testbed::m_n_super_rays)

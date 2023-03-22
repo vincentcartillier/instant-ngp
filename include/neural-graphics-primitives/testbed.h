@@ -806,7 +806,8 @@ public:
 	void train_nerf_slam_tracking(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_tracking_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 	void train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream);
-	
+	void train_nerf_slam_tracking_step_mgl_coarse_to_fine(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream);
+
 	std::vector<float> make_5tap_kernel();
 	void get_receptive_field_of_gaussian_pyramid_at_level(uint32_t level, std::vector<int>& rf);
 	void sample_pixels_for_tracking_with_gaussian_pyramid(
@@ -832,7 +833,10 @@ public:
 	
 	uint32_t m_tracking_step = 0;
 	uint32_t m_tracking_gaussian_pyramid_level=0;
-	uint32_t m_tracking_mode = 0; // { 0: default, 1: using GP }
+	float m_tracking_max_grid_level=1.0f;
+	uint32_t m_tracking_mode = 0; // { 0: default, 1: using GP, 2: using max_grid_lvl coarse_to_fine }
+
+	float m_max_grid_level_factor = 2.0f; //multiplies the rng mgl to map it from [0,1] -> [0,f]
 	
 
 	// == DEBUG
