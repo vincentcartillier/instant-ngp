@@ -3794,6 +3794,8 @@ void Testbed::reset_network(bool clear_density_grid) {
 
 	m_trainer = std::make_shared<Trainer<float, precision_t, precision_t>>(m_network, m_optimizer, m_loss, m_seed);
 	m_training_step = 0;
+	m_tracking_step = 0;
+	m_ba_step = 0;
 	m_training_start_time_point = std::chrono::steady_clock::now();
 
 	// Create envmap model

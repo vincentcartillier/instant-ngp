@@ -577,6 +577,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("tracking_mode", &Testbed::m_tracking_mode)
 		.def_readwrite("ba_mode", &Testbed::m_ba_mode)
 		.def("set_max_level", &Testbed::set_max_level, py::arg("maxlevel"))
+		.def("get_max_level", &Testbed::get_max_level)
 		.def_readwrite("tracking_max_grid_level", &Testbed::m_tracking_max_grid_level)
 		.def_readwrite("max_grid_level_factor", &Testbed::m_max_grid_level_factor)
 		//DEBUG
@@ -584,8 +585,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("n_super_rays", &Testbed::m_n_super_rays)
 		.def_readonly("n_total_rays", &Testbed::m_n_total_rays)
 		.def_readonly("n_total_rays_for_gradient", &Testbed::m_n_total_rays_for_gradient)
+		.def_readonly("ray_counter", &Testbed::m_ray_counter)
+		.def_readonly("rays_per_batch", &Testbed::m_rays_per_batch)
 		.def_readonly("xy_image_pixel_indices_int", &Testbed::m_xy_image_pixel_indices_int)
 		.def_readonly("existing_ray_mapping", &Testbed::m_existing_ray_mapping)
+		.def_readonly("num_rays_per_images", &Testbed::m_num_rays_per_images)
 		//DEBUG
 		//DEBUG
 		;

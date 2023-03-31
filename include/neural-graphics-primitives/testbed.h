@@ -815,6 +815,7 @@ public:
 	void train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream);
 	void train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream);
+	void training_prep_nerf_ba(uint32_t batch_size, cudaStream_t stream);
 
 	std::vector<float> make_5tap_kernel();
 	void get_receptive_field_of_gaussian_pyramid_at_level(uint32_t level, std::vector<int>& rf);
@@ -871,13 +872,18 @@ public:
 	
 	uint32_t m_ba_step = 0;
 
+	float get_max_level();
+
 	// == DEBUG
 	// == DEBUG
 	uint32_t m_n_super_rays=0;
 	uint32_t m_n_total_rays=0;
 	uint32_t m_n_total_rays_for_gradient=0;
+	uint32_t m_ray_counter=0;
+	uint32_t m_rays_per_batch=0;
 	std::vector<uint32_t> m_xy_image_pixel_indices_int;
 	std::vector<uint32_t> m_existing_ray_mapping;
+	std::vector<uint32_t> m_num_rays_per_images;
 	// == DEBUG
 	// == DEBUG
 
