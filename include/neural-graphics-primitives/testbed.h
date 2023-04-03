@@ -742,6 +742,7 @@ public:
 
 			// SLAM
 			std::vector<uint32_t> idx_images_for_mapping;
+			std::vector<uint32_t> idx_images_for_mapping_prev;
 			tcnn::GPUMemory<uint32_t> idx_images_for_mapping_gpu;
 
 			uint32_t indice_image_for_tracking_pose=0;
@@ -873,6 +874,7 @@ public:
 	uint32_t m_ba_step = 0;
 
 	float get_max_level();
+	void update_density_grid_nerf_ba(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 
 	// == DEBUG
 	// == DEBUG

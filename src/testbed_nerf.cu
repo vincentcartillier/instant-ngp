@@ -7446,6 +7446,186 @@ void Testbed::train_nerf_slam_tracking_step_mgl_coarse_to_fine(uint32_t target_b
 ##############################################################################################
 */
 
+__global__ void mark_untrained_density_grid_slam(const uint32_t n_elements,  float* __restrict__ grid_out,
+	const uint32_t n_training_images,
+	const uint32_t* __restrict__ idx_images_for_mapping,
+	const TrainingImageMetadata* __restrict__ metadata,
+	const TrainingXForm* training_xforms,
+	bool clear_visible_voxels
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_elements) return;
+
+	uint32_t level = i / NERF_GRID_N_CELLS();
+	uint32_t pos_idx = i % NERF_GRID_N_CELLS();
+
+	uint32_t x = tcnn::morton3D_invert(pos_idx>>0);
+	uint32_t y = tcnn::morton3D_invert(pos_idx>>1);
+	uint32_t z = tcnn::morton3D_invert(pos_idx>>2);
+
+	float voxel_size = scalbnf(1.0f / NERF_GRIDSIZE(), level);
+	vec3 pos = (vec3{(float)x, (float)y, (float)z} / (float)NERF_GRIDSIZE() - vec3(0.5f)) * scalbnf(1.0f, level) + vec3(0.5f);
+
+	vec3 corners[8] = {
+		pos + vec3{0.0f,       0.0f,       0.0f      },
+		pos + vec3{voxel_size, 0.0f,       0.0f      },
+		pos + vec3{0.0f,       voxel_size, 0.0f      },
+		pos + vec3{voxel_size, voxel_size, 0.0f      },
+		pos + vec3{0.0f,       0.0f,       voxel_size},
+		pos + vec3{voxel_size, 0.0f,       voxel_size},
+		pos + vec3{0.0f,       voxel_size, voxel_size},
+		pos + vec3{voxel_size, voxel_size, voxel_size},
+	};
+
+	// Number of training views that need to see a voxel cell
+	// at minimum for that cell to be marked trainable.
+	// Floaters can be reduced by increasing this value to 2,
+	// but at the cost of certain reconstruction artifacts.
+	const uint32_t min_count = 1;
+	uint32_t count = 0;
+
+	for (uint32_t j = 0; j < n_training_images && count < min_count; ++j) {
+		const uint32_t img = idx_images_for_mapping[j];
+		const auto& xform = training_xforms[img].start;
+		const auto& m = metadata[img];
+
+		if (m.lens.mode == ELensMode::FTheta || m.lens.mode == ELensMode::LatLong || m.lens.mode == ELensMode::Equirectangular) {
+			// FTheta lenses don't have a forward mapping, so are assumed seeing everything. Latlong and equirect lenses
+			// by definition see everything.
+			++count;
+			continue;
+		}
+
+		for (uint32_t k = 0; k < 8; ++k) {
+			// Only consider voxel corners in front of the camera
+			vec3 dir = normalize(corners[k] - xform[3]);
+			if (dot(dir, xform[2]) < 1e-4f) {
+				continue;
+			}
+
+			// Check if voxel corner projects onto the image plane, i.e. uv must be in (0, 1)^2
+			vec2 uv = pos_to_uv(corners[k], m.resolution, m.focal_length, xform, m.principal_point, vec3(0.0f), {}, m.lens);
+
+			// `pos_to_uv` is _not_ injective in the presence of lens distortion (which breaks down outside of the image plane).
+			// So we need to check whether the produced uv location generates a ray that matches the ray that we started with.
+			Ray ray = uv_to_ray(0.0f, uv, m.resolution, m.focal_length, xform, m.principal_point, vec3(0.0f), 0.0f, 1.0f, 0.0f, {}, {}, m.lens);
+			if (distance(normalize(ray.d), dir) < 1e-3f && uv.x > 0.0f && uv.y > 0.0f && uv.x < 1.0f && uv.y < 1.0f) {
+				++count;
+				break;
+			}
+		}
+	}
+
+	if (clear_visible_voxels || (grid_out[i] < 0) != (count < min_count)) {
+		grid_out[i] = (count >= min_count) ? 0.f : -1.f;
+	}
+}
+
+
+void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream) {
+	const uint32_t n_elements = NERF_GRID_N_CELLS() * (m_nerf.max_cascade + 1);
+
+	m_nerf.density_grid.resize(n_elements);
+
+	const uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples;
+
+	const uint32_t padded_output_width = m_nerf_network->padded_density_output_width();
+
+	GPUMemoryArena::Allocation alloc;
+	auto scratch = allocate_workspace_and_distribute<
+		NerfPosition,       // positions at which the NN will be queried for density evaluation
+		uint32_t,           // indices of corresponding density grid cells
+		float,              // the resulting densities `density_grid_tmp` to be merged with the running estimate of the grid
+		network_precision_t // output of the MLP before being converted to densities.
+	>(stream, &alloc, n_density_grid_samples, n_elements, n_elements, n_density_grid_samples * padded_output_width);
+
+	NerfPosition* density_grid_positions = std::get<0>(scratch);
+	uint32_t* density_grid_indices = std::get<1>(scratch);
+	float* density_grid_tmp = std::get<2>(scratch);
+	network_precision_t* mlp_out = std::get<3>(scratch);
+
+    std::sort(m_nerf.training.idx_images_for_mapping.begin(), m_nerf.training.idx_images_for_mapping.end());
+    std::sort(m_nerf.training.idx_images_for_mapping_prev.begin(), m_nerf.training.idx_images_for_mapping_prev.end());
+
+	if (m_ba_step == 0 || m_nerf.training.idx_images_for_mapping != m_nerf.training.idx_images_for_mapping_prev) {
+		m_nerf.training.idx_images_for_mapping_prev = m_nerf.training.idx_images_for_mapping;
+		if (m_ba_step == 0) {
+			m_nerf.density_grid_ema_step = 0;
+		}
+	
+		//NOTE: send mapping image indices to device
+		m_nerf.training.idx_images_for_mapping_gpu.enlarge(m_nerf.training.idx_images_for_mapping.size());
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy( m_nerf.training.idx_images_for_mapping_gpu.data(), m_nerf.training.idx_images_for_mapping.data(), m_nerf.training.idx_images_for_mapping.size() * sizeof(uint32_t), cudaMemcpyHostToDevice)
+ 	   );
+
+		// Only cull away empty regions where no camera is looking when the cameras are actually meaningful.
+		if (!m_nerf.training.dataset.has_rays) {
+			linear_kernel(mark_untrained_density_grid_slam, 0, stream, n_elements, m_nerf.density_grid.data(),
+				m_nerf.training.idx_images_for_mapping.size(),
+				m_nerf.training.idx_images_for_mapping_gpu.data(),
+				m_nerf.training.dataset.metadata_gpu.data(),
+				m_nerf.training.transforms_gpu.data(),
+				m_ba_step == 0
+			);
+		} else {
+			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
+		}
+	}
+
+	uint32_t n_steps = 1;
+	for (uint32_t i = 0; i < n_steps; ++i) {
+		CUDA_CHECK_THROW(cudaMemsetAsync(density_grid_tmp, 0, sizeof(float)*n_elements, stream));
+
+		linear_kernel(generate_grid_samples_nerf_nonuniform, 0, stream,
+			n_uniform_density_grid_samples,
+			m_nerf.training.density_grid_rng,
+			m_nerf.density_grid_ema_step,
+			m_aabb,
+			m_nerf.density_grid.data(),
+			density_grid_positions,
+			density_grid_indices,
+			m_nerf.max_cascade+1,
+			-0.01f
+		);
+		m_nerf.training.density_grid_rng.advance();
+
+		linear_kernel(generate_grid_samples_nerf_nonuniform, 0, stream,
+			n_nonuniform_density_grid_samples,
+			m_nerf.training.density_grid_rng,
+			m_nerf.density_grid_ema_step,
+			m_aabb,
+			m_nerf.density_grid.data(),
+			density_grid_positions+n_uniform_density_grid_samples,
+			density_grid_indices+n_uniform_density_grid_samples,
+			m_nerf.max_cascade+1,
+			NERF_MIN_OPTICAL_THICKNESS()
+		);
+		m_nerf.training.density_grid_rng.advance();
+
+		// Evaluate density at the spawned locations in batches.
+		// Otherwise, we can exhaust the maximum index range of cutlass
+		size_t batch_size = NERF_GRID_N_CELLS() * 2;
+
+		for (size_t i = 0; i < n_density_grid_samples; i += batch_size) {
+			batch_size = std::min(batch_size, n_density_grid_samples - i);
+
+			GPUMatrix<network_precision_t, RM> density_matrix(mlp_out + i, padded_output_width, batch_size);
+			GPUMatrix<float> density_grid_position_matrix((float*)(density_grid_positions + i), sizeof(NerfPosition)/sizeof(float), batch_size);
+			m_nerf_network->density(stream, density_grid_position_matrix, density_matrix, false);
+		}
+
+		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation);
+		linear_kernel(ema_grid_samples_nerf, 0, stream, n_elements, decay, m_nerf.density_grid_ema_step, m_nerf.density_grid.data(), density_grid_tmp);
+
+		++m_nerf.density_grid_ema_step;
+	}
+
+	update_density_grid_mean_and_bitfield(stream);
+}
+
+
+
 
 void Testbed::train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
 	if (m_nerf.training.n_images_for_training == 0) {
@@ -7467,7 +7647,7 @@ void Testbed::train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool
 	}
     
 	//m_nerf.training.counters_rgb_ba.rays_per_batch = m_nerf.training.m_target_num_rays_for_ba;
-	m_nerf.training.counters_rgb.prepare_for_training_steps(stream);
+	m_nerf.training.counters_rgb_ba.prepare_for_training_steps(stream);
 
 	if (m_nerf.training.n_steps_since_cam_update == 0) {
 		m_num_rays_per_images.clear();
@@ -7488,7 +7668,7 @@ void Testbed::train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool
 	}
 
 	if (m_nerf.training.n_steps_since_error_map_update == 0 && !m_nerf.training.dataset.metadata.empty()) {
-		uint32_t n_samples_per_image = (m_nerf.training.n_steps_between_error_map_updates * m_nerf.training.counters_rgb.rays_per_batch) / m_nerf.training.idx_images_for_mapping.size();
+		uint32_t n_samples_per_image = (m_nerf.training.n_steps_between_error_map_updates * m_nerf.training.counters_rgb_ba.rays_per_batch) / m_nerf.training.idx_images_for_mapping.size();
 		ivec2 res = m_nerf.training.dataset.metadata[0].resolution;
 		m_nerf.training.error_map.resolution = min(ivec2((int)(std::sqrt(std::sqrt((float)n_samples_per_image)) * 3.5f)), res);
 		m_nerf.training.error_map.data.resize(compMul(m_nerf.training.error_map.resolution) * m_nerf.training.idx_images_for_mapping.size());
@@ -7514,7 +7694,7 @@ void Testbed::train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool
 	if (m_ba_mode==1) {
 		train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(target_batch_size, m_nerf.training.counters_rgb_ba, stream);
 	} else if (m_ba_mode==2) {
-		train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(target_batch_size, m_nerf.training.counters_rgb, stream);
+		train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(target_batch_size, m_nerf.training.counters_rgb_ba, stream);
 	} else {
 		throw std::runtime_error{"Invalid bundle adjustment mode."};
 	}
@@ -7522,14 +7702,13 @@ void Testbed::train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool
 	m_trainer->optimizer_step(stream, LOSS_SCALE);
 
 	++m_ba_step;
-	++m_training_step;
 
 	if (envmap_gradient) {
 		m_envmap.trainer->optimizer_step(stream, LOSS_SCALE);
 	}
 
-	float loss_scalar = m_nerf.training.counters_rgb.update_after_training(target_batch_size, get_loss_scalar, stream);
-	bool zero_records = m_nerf.training.counters_rgb.measured_batch_size == 0;
+	float loss_scalar = m_nerf.training.counters_rgb_ba.update_after_training(target_batch_size, get_loss_scalar, stream);
+	bool zero_records = m_nerf.training.counters_rgb_ba.measured_batch_size == 0;
 	if (get_loss_scalar) {
 		m_loss_scalar.update(loss_scalar);
 	}
@@ -8302,7 +8481,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t
 
 	GPUMatrix<network_precision_t> gradient_matrix(dloss_dmlp_out, padded_output_width, target_batch_size);
 
-	if (m_training_step == 0) {
+	if (m_ba_step == 0) {
 		counters.n_rays_total = 0;
 	}
 
