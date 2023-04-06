@@ -805,6 +805,8 @@ public:
 	void map(uint32_t batch_size);
 	void train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
+	void training_prep_nerf_mapping(uint32_t batch_size, cudaStream_t stream);
+	void update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	
 	void track(uint32_t batch_size);
 	void train_nerf_slam_tracking(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -817,6 +819,7 @@ public:
 	void train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream);
 	void train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t target_batch_size, Testbed::NerfCounters& counters, cudaStream_t stream);
 	void training_prep_nerf_ba(uint32_t batch_size, cudaStream_t stream);
+	void update_density_grid_nerf_ba(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 
 	std::vector<float> make_5tap_kernel();
 	void get_receptive_field_of_gaussian_pyramid_at_level(uint32_t level, std::vector<int>& rf);
@@ -874,7 +877,8 @@ public:
 	uint32_t m_ba_step = 0;
 
 	float get_max_level();
-	void update_density_grid_nerf_ba(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
+
+	Ema m_loss_scalar_tracking = {EEmaType::Time, 100};
 
 	// == DEBUG
 	// == DEBUG

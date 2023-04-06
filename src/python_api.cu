@@ -580,6 +580,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("get_max_level", &Testbed::get_max_level)
 		.def_readwrite("tracking_max_grid_level", &Testbed::m_tracking_max_grid_level)
 		.def_readwrite("max_grid_level_factor", &Testbed::m_max_grid_level_factor)
+		.def_property_readonly("loss_tracking", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar_tracking.val(); })
 		//DEBUG
 		//DEBUG
 		.def_readonly("n_super_rays", &Testbed::m_n_super_rays)

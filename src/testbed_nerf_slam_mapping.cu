@@ -74,7 +74,7 @@ void Testbed::map(uint32_t batch_size) {
 		}};
 
 		switch (m_testbed_mode) {
-			case ETestbedMode::Nerf: training_prep_nerf(batch_size, m_stream.get()); break;
+			case ETestbedMode::Nerf: training_prep_nerf_mapping(batch_size, m_stream.get()); break;
 			default: throw std::runtime_error{"Invalid training mode (for SLAM it has to be Nerf)."};
 		}
 
@@ -90,8 +90,8 @@ void Testbed::map(uint32_t batch_size) {
 	(*leaf_optimizer_config)["optimize_non_matrix_params"] = m_train_encoding;
 	m_optimizer->update_hyperparams(m_network_config["optimizer"]);
 
-	//bool get_loss_scalar = m_training_step % 16 == 0;
-	bool get_loss_scalar = true;
+	//bool get_loss_scalar = true;
+	bool get_loss_scalar = m_training_step % 16 == 0;
 
 	{
 		auto start = std::chrono::steady_clock::now();
@@ -109,5 +109,20 @@ void Testbed::map(uint32_t batch_size) {
 	}
 }
 
+
+void Testbed::training_prep_nerf_mapping(uint32_t batch_size, cudaStream_t stream) {
+	if (m_nerf.training.n_images_for_training == 0) {
+		return;
+	}
+
+	float alpha = m_nerf.training.density_grid_decay;
+	uint32_t n_cascades = m_nerf.max_cascade+1;
+
+	if (m_training_step < 256) {
+		update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
+	} else {
+		update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() / 4 * n_cascades, NERF_GRID_N_CELLS() / 4 * n_cascades, stream);
+	}
+}
 
 NGP_NAMESPACE_END
