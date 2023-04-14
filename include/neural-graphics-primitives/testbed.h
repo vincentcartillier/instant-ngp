@@ -754,9 +754,14 @@ public:
 
 			NerfCounters counters_rgb_tracking;
 			uint32_t m_target_num_rays_for_tracking = 2048;
+			uint32_t m_target_num_rays = 2048;
 			
 			NerfCounters counters_rgb_ba;
 			uint32_t m_target_num_rays_for_ba = 2048;
+
+			bool m_set_fix_num_rays_to_sample = false;
+			float extrinsic_learning_rate_pos = 1e-3f;
+			float extrinsic_learning_rate_rot = 1e-3f;
 
 
 		} training = {};
@@ -880,6 +885,8 @@ public:
 	float get_max_level();
 
 	Ema m_loss_scalar_tracking = {EEmaType::Time, 100};
+
+	bool m_reset_prep_nerf_mapping = false;
 
 	// == DEBUG
 	// == DEBUG

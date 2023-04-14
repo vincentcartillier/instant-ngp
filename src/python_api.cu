@@ -581,6 +581,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("get_max_level", &Testbed::get_max_level)
 		.def_readwrite("tracking_max_grid_level", &Testbed::m_tracking_max_grid_level)
 		.def_readwrite("max_grid_level_factor", &Testbed::m_max_grid_level_factor)
+		.def_readwrite("reset_prep_nerf_mapping", &Testbed::m_reset_prep_nerf_mapping)
 		.def_property_readonly("loss_tracking", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar_tracking.val(); })
 		//DEBUG
 		//DEBUG
@@ -668,7 +669,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("is_hdr", &NerfDataset::is_hdr)
 		;
 
-	py::class_<Testbed::Nerf::Training>(nerf, "Training")
+	py::class_<Testbed::Nerf::Training> training(nerf, "Training");
+	training
 		.def_readwrite("random_bg_color", &Testbed::Nerf::Training::random_bg_color)
 		.def_readwrite("n_images_for_training", &Testbed::Nerf::Training::n_images_for_training)
 		.def_readwrite("linear_colors", &Testbed::Nerf::Training::linear_colors)
@@ -728,8 +730,14 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("sample_away_from_border_margin_h_tracking", &Testbed::Nerf::Training::m_sample_away_from_border_margin_h_tracking)
 		.def_readwrite("sample_away_from_border_margin_w_tracking", &Testbed::Nerf::Training::m_sample_away_from_border_margin_w_tracking)
 		.def_readwrite("use_depth_var_in_tracking_loss", &Testbed::Nerf::Training::use_depth_var_in_tracking_loss)
+		.def_readwrite("target_num_rays_for_mapping", &Testbed::Nerf::Training::m_target_num_rays)
 		.def_readwrite("target_num_rays_for_tracking", &Testbed::Nerf::Training::m_target_num_rays_for_tracking)
 		.def_readwrite("target_num_rays_for_ba", &Testbed::Nerf::Training::m_target_num_rays_for_ba)
+		.def_readonly("error_map", &Testbed::Nerf::Training::error_map)
+		.def_readwrite("set_fix_num_rays_to_sample", &Testbed::Nerf::Training::m_set_fix_num_rays_to_sample)
+		.def_readwrite("extrinsic_learning_rate_pos", &Testbed::Nerf::Training::extrinsic_learning_rate_pos)
+		.def_readwrite("extrinsic_learning_rate_rot", &Testbed::Nerf::Training::extrinsic_learning_rate_rot)
+		.def_readonly("counters_rgb", &Testbed::Nerf::Training::counters_rgb)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
@@ -765,6 +773,16 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("snap_to_pixel_centers", &Testbed::Image::Training::snap_to_pixel_centers)
 		.def_readwrite("linear_colors", &Testbed::Image::Training::linear_colors)
 		;
+	
+	py::class_<Testbed::Nerf::Training::ErrorMap>(training, "ErrorMap")
+		.def_readwrite("is_cdf_valid", &Testbed::Nerf::Training::ErrorMap::is_cdf_valid)
+		;
+	
+	py::class_<Testbed::NerfCounters>(training, "NerfCounters")
+		.def_readonly("rays_per_batch", &Testbed::NerfCounters::rays_per_batch)
+		;
+
+
 }
 
 NGP_NAMESPACE_END

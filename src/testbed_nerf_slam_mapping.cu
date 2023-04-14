@@ -67,7 +67,7 @@ void Testbed::map(uint32_t batch_size) {
 	}
 
 	uint32_t n_prep_to_skip = m_testbed_mode == ETestbedMode::Nerf ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;
-	if (m_training_step % n_prep_to_skip == 0) {
+	if ((m_training_step % n_prep_to_skip == 0) || (m_reset_prep_nerf_mapping) ) {
 		auto start = std::chrono::steady_clock::now();
 		ScopeGuard timing_guard{[&]() {
 			m_training_prep_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count() / n_prep_to_skip);
@@ -79,6 +79,8 @@ void Testbed::map(uint32_t batch_size) {
 		}
 
 		CUDA_CHECK_THROW(cudaStreamSynchronize(m_stream.get()));
+		
+		m_reset_prep_nerf_mapping = false;
 	}
 
 	// Find leaf optimizer and update its settings
