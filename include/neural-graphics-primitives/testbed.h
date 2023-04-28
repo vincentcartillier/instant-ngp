@@ -888,16 +888,39 @@ public:
 
 	bool m_reset_prep_nerf_mapping = false;
 
+	void track_steps(
+	    const uint32_t cam_id, 
+	    const uint32_t target_batch_size, 
+	    const uint32_t margin_h, 
+	    const uint32_t margin_w, 
+	    const uint32_t tracking_mode, 
+	    const int num_rays_to_sample, 
+	    float lr,
+	    float pos_lr,
+	    float rot_lr,
+	    const bool separate_pos_and_rot_lr,
+	    const std::vector<std::map<std::string, float> >& tracking_hyperparameters
+	);
+
 	// == DEBUG
 	// == DEBUG
 	uint32_t m_n_super_rays=0;
 	uint32_t m_n_total_rays=0;
 	uint32_t m_n_total_rays_for_gradient=0;
 	uint32_t m_ray_counter=0;
+	uint32_t m_super_ray_counter=0;
 	uint32_t m_rays_per_batch=0;
 	std::vector<uint32_t> m_xy_image_pixel_indices_int;
+	std::vector<uint32_t> m_xy_image_super_pixel_at_level_indices_int;
 	std::vector<uint32_t> m_existing_ray_mapping;
 	std::vector<uint32_t> m_num_rays_per_images;
+	
+	std::vector<float> m_gt_rgbd_at_level;
+	std::vector<float> m_rec_rgbd_at_level;
+	std::vector<float> m_rec_depth_var_at_level;
+
+	vec3 m_pos_gradient;
+	vec3 m_rot_gradient;
 	// == DEBUG
 	// == DEBUG
 

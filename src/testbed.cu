@@ -3597,6 +3597,8 @@ void Testbed::reset_network(bool clear_density_grid) {
 	m_nerf.training.counters_rgb.measured_batch_size_before_compaction = 0;
 	m_nerf.training.counters_rgb_ba.rays_per_batch = 1 << 12;
 	m_nerf.training.counters_rgb_ba.measured_batch_size_before_compaction = 0;
+	m_nerf.training.counters_rgb_tracking.rays_per_batch = 1 << 12;
+	m_nerf.training.counters_rgb_tracking.measured_batch_size_before_compaction = 0;
 	m_nerf.training.n_steps_since_cam_update = 0;
 	m_nerf.training.n_steps_since_error_map_update = 0;
 	m_nerf.training.n_rays_since_error_map_update = 0;

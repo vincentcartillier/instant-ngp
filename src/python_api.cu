@@ -583,16 +583,24 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("max_grid_level_factor", &Testbed::m_max_grid_level_factor)
 		.def_readwrite("reset_prep_nerf_mapping", &Testbed::m_reset_prep_nerf_mapping)
 		.def_property_readonly("loss_tracking", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar_tracking.val(); })
+		.def("track_steps", &Testbed::track_steps, py::call_guard<py::gil_scoped_release>(), "Perform SLAM tracking iterations.")
 		//DEBUG
 		//DEBUG
 		.def_readonly("n_super_rays", &Testbed::m_n_super_rays)
 		.def_readonly("n_total_rays", &Testbed::m_n_total_rays)
 		.def_readonly("n_total_rays_for_gradient", &Testbed::m_n_total_rays_for_gradient)
 		.def_readonly("ray_counter", &Testbed::m_ray_counter)
+		.def_readonly("super_ray_counter", &Testbed::m_super_ray_counter)
 		.def_readonly("rays_per_batch", &Testbed::m_rays_per_batch)
 		.def_readonly("xy_image_pixel_indices_int", &Testbed::m_xy_image_pixel_indices_int)
+		.def_readonly("xy_image_super_pixel_at_level_indices_int", &Testbed::m_xy_image_super_pixel_at_level_indices_int)
 		.def_readonly("existing_ray_mapping", &Testbed::m_existing_ray_mapping)
 		.def_readonly("num_rays_per_images", &Testbed::m_num_rays_per_images)
+		.def_readonly("gt_rgbd_at_level", &Testbed::m_gt_rgbd_at_level)
+		.def_readonly("rec_rgbd_at_level", &Testbed::m_rec_rgbd_at_level)
+		.def_readonly("rec_depth_var_at_level", &Testbed::m_rec_depth_var_at_level)
+		.def_readonly("pos_gradient", &Testbed::m_pos_gradient)
+		.def_readonly("rot_gradient", &Testbed::m_rot_gradient)
 		//DEBUG
 		//DEBUG
 		;
@@ -738,6 +746,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("extrinsic_learning_rate_pos", &Testbed::Nerf::Training::extrinsic_learning_rate_pos)
 		.def_readwrite("extrinsic_learning_rate_rot", &Testbed::Nerf::Training::extrinsic_learning_rate_rot)
 		.def_readonly("counters_rgb", &Testbed::Nerf::Training::counters_rgb)
+		.def_readonly("counters_rgb_ba", &Testbed::Nerf::Training::counters_rgb_ba)
+		.def_readonly("counters_rgb_tracking", &Testbed::Nerf::Training::counters_rgb_tracking)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
@@ -780,6 +790,7 @@ PYBIND11_MODULE(pyngp, m) {
 	
 	py::class_<Testbed::NerfCounters>(training, "NerfCounters")
 		.def_readonly("rays_per_batch", &Testbed::NerfCounters::rays_per_batch)
+		.def_readonly("measured_batch_size", &Testbed::NerfCounters::measured_batch_size)
 		;
 
 

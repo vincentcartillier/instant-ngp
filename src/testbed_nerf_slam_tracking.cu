@@ -218,4 +218,115 @@ std::vector<float> Testbed::make_5tap_kernel() {
     return kernel;
 }
 
+
+
+
+
+
+
+
+
+void Testbed::track_steps(
+    const uint32_t cam_id, 
+    const uint32_t target_batch_size, 
+    const uint32_t margin_h, 
+    const uint32_t margin_w, 
+    const uint32_t tracking_mode, 
+    const int num_rays_to_sample, 
+    float lr,
+    float pos_lr,
+    float rot_lr,
+    const bool separate_pos_and_rot_lr,
+    const std::vector<std::map<std::string, float> >& tracking_hyperparameters
+    ) {
+    
+    //assumes the camera pose of cam_id has been initialized already
+
+    // init variables before tracking
+    m_nerf.training.sample_image_proportional_to_error = False;
+    m_nerf.training.optimize_extrinsics = False;
+    m_nerf.training.optimize_exposure = False;
+    m_nerf.training.optimize_extra_dims = False;
+    m_nerf.training.optimize_distortion = False;
+    m_nerf.training.optimize_focal_length = False;
+    m_nerf.training.include_sharpness_in_error = False;
+    m_nerf.training.indice_image_for_tracking_pose = cam_id;
+    m_nerf.training.n_steps_between_cam_updates = 1;
+    m_nerf.training.n_steps_since_cam_update = 0;
+    m_nerf.training.n_steps_since_error_map_update = 0;
+    m_nerf.training.m_sample_away_from_border_margin_h_tracking = margin_h;
+    m_nerf.training.m_sample_away_from_border_margin_w_tracking = margin_w;
+    m_train_encoding = false;
+    m_train_network = false;
+    m_train = true;
+    m_max_level_rand_training = false;
+    m_nerf.training.use_depth_var_in_tracking_loss = true;
+    m_tracking_mode = tracking_mode;
+    if (num_rays_to_sample > 0) {
+        m_nerf.training.m_target_num_rays_for_tracking = num_rays_to_sample;
+        m_nerf.training.m_set_fix_num_rays_to_sample = true;
+    } else {
+        m_nerf.training.m_set_fix_num_rays_to_sample = false;
+    }
+    if (separate_pos_and_rot_lr) {
+        m_nerf.training.extrinsic_learning_rate_pos = pos_lr;
+        m_nerf.training.extrinsic_learning_rate_rot = rot_lr;
+    } else {
+        m_nerf.training.extrinsic_learning_rate_pos = lr;
+        m_nerf.training.extrinsic_learning_rate_rot = lr;
+    }
+
+    //do tracking:
+    float min_loss;
+    float cur_loss;
+    auto cur_c2w = m_nerf.training.get_camera_extrinsics(cam_id); 
+    auto final_c2w = m_nerf.training.get_camera_extrinsics(cam_id); 
+    for (uint32_t i=0; i<tracking_hyperparameters.size(); i++) {
+        
+        std::map<std::string, float> e = tracking_hyperparameters[i];
+
+        uint32_t iterations = e["iterations"];
+        float lr_factor = e["lr_factor"];
+        uint32_t n_steps_between_cam_updates_tracking = e["n_steps_between_cam_updates"];
+
+        m_nerf.training.n_steps_between_cam_updates = n_steps_between_cam_updates_tracking;
+
+        if (separate_pos_and_rot_lr) {
+            m_nerf.training.extrinsic_learning_rate_pos = pos_lr * lr_factor;
+            m_nerf.training.extrinsic_learning_rate_rot = rot_lr * lr_factor;
+        } else {
+            m_nerf.training.extrinsic_learning_rate_pos = lr * lr_factor;
+            m_nerf.training.extrinsic_learning_rate_rot = lr * lr_factor;
+        }
+
+        min_loss = 10000000.;
+        cur_loss = 0.;
+        cur_c2w = m_nerf.training.get_camera_extrinsics(cam_id); 
+        
+        for (uint32_t ite=0; ite<iterations; ite++) {
+            track(target_batch_size);
+            float loss = m_loss_scalar_tracking.val();
+            uint32_t measured_batch_size = m_nerf.training.counters_rgb_tracking.measured_batch_size;
+            loss = loss * (float)target_batch_size / (float)measured_batch_size;
+            cur_loss += loss;
+
+            if ((ite+1)%n_steps_between_cam_updates_tracking==0) {
+                cur_loss /= (float)n_steps_between_cam_updates_tracking;
+                if (cur_loss < min_loss) {
+                    min_loss = cur_loss;
+                    final_c2w = cur_c2w; ///!\ need to make sure this is properly copied.
+                }
+                cur_loss = 0.;
+                cur_c2w = m_nerf.training.get_camera_extrinsics(cam_id); 
+            }
+        }
+    }
+    m_nerf.training.set_camera_extrinsics(cam_id, final_c2w, true); 
+}
+
+
+
+
+
+
 NGP_NAMESPACE_END
