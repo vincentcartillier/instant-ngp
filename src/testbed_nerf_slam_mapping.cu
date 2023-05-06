@@ -116,6 +116,12 @@ void Testbed::training_prep_nerf_mapping(uint32_t batch_size, cudaStream_t strea
 	if (m_nerf.training.n_images_for_training == 0) {
 		return;
 	}
+			
+	//NOTE: we're not using density_grid in SDF mode
+	// This is a bit hacky/less efficient -> Fix density grids with SDF as TODO
+	if (m_use_sdf_in_nerf) {
+		return;
+	}
 
 	float alpha = m_nerf.training.density_grid_decay;
 	uint32_t n_cascades = m_nerf.max_cascade+1;

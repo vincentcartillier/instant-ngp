@@ -89,8 +89,13 @@ public:
 		if (!density_network.contains("n_output_dims")) {
 			local_density_network_config["n_output_dims"] = 16;
 		}
+		if (density_network.contains("scale_init_params")) {
+			m_density_scale_init_params = density_network["scale_init_params"];
+		} else {
+			m_density_scale_init_params = 1.0f;
+		}
 		m_density_network.reset(tcnn::create_network<T>(local_density_network_config));
-
+		
 		m_rgb_network_input_width = tcnn::next_multiple(m_dir_encoding->padded_output_width() + m_density_network->padded_output_width(), rgb_alignment);
 
 		json local_rgb_network_config = rgb_network;
@@ -378,7 +383,9 @@ public:
 	}
 
 	void initialize_params(tcnn::pcg32& rnd, float* params_full_precision, float scale = 1) override {
-		m_density_network->initialize_params(rnd, params_full_precision, scale);
+		
+		float density_scale = scale * m_density_scale_init_params;
+		m_density_network->initialize_params(rnd, params_full_precision, density_scale);
 		params_full_precision += m_density_network->n_params();
 
 		m_rgb_network->initialize_params(rnd, params_full_precision, scale);
@@ -490,6 +497,8 @@ private:
 	uint32_t m_n_dir_dims;
 	uint32_t m_n_extra_dims; // extra dimensions are assumed to be part of a compound encoding with dir_dims
 	uint32_t m_dir_offset;
+	
+	float m_density_scale_init_params;
 
 	// // Storage of forward pass data
 	struct ForwardContext : public tcnn::Context {

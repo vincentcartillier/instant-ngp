@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -173,7 +173,8 @@ public:
 			uint32_t max_mip,
 			float cone_angle_constant,
 			ERenderMode render_mode,
-			cudaStream_t stream
+			cudaStream_t stream,
+			bool use_sdf_in_nerf
 		);
 
 		uint32_t trace(
@@ -197,7 +198,9 @@ public:
 			float glow_y_cutoff,
 			int glow_mode,
 			const float* extra_dims_gpu,
-			cudaStream_t stream
+			cudaStream_t stream,
+            const bool use_sdf_in_nerf,
+            float truncation_distance
 		);
 
 		void enlarge(size_t n_elements, uint32_t padded_output_width, uint32_t n_extra_dims, cudaStream_t stream);
@@ -755,13 +758,19 @@ public:
 			NerfCounters counters_rgb_tracking;
 			uint32_t m_target_num_rays_for_tracking = 2048;
 			uint32_t m_target_num_rays = 2048;
-			
+
 			NerfCounters counters_rgb_ba;
 			uint32_t m_target_num_rays_for_ba = 2048;
 
 			bool m_set_fix_num_rays_to_sample = false;
 			float extrinsic_learning_rate_pos = 1e-3f;
 			float extrinsic_learning_rate_rot = 1e-3f;
+
+			float free_space_supervision_lambda = 0.0f;
+			float free_space_supervision_distance = 0.0f;
+			float truncation_distance = 0.05f;
+			
+			float sdf_supervision_lambda = 0.0f;
 
 
 		} training = {};
@@ -813,7 +822,7 @@ public:
 	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 	void training_prep_nerf_mapping(uint32_t batch_size, cudaStream_t stream);
 	void update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
-	
+
 	void track(uint32_t batch_size);
 	void train_nerf_slam_tracking(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 	void train_nerf_slam_tracking_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
@@ -871,7 +880,7 @@ public:
     	const std::vector<uint32_t>& idx_images_for_mapping,
     	std::vector<uint32_t>& image_ids
     );
-	
+
 	uint32_t m_tracking_step = 0;
 	uint32_t m_tracking_gaussian_pyramid_level=0;
 	float m_tracking_max_grid_level=1.0f;
@@ -879,7 +888,7 @@ public:
 	uint32_t m_ba_mode = 1; // { 1: using GP, 2: using max_grid_lvl coarse_to_fine }
 
 	float m_max_grid_level_factor = 2.0f; //multiplies the rng mgl to map it from [0,1] -> [0,f]
-	
+
 	uint32_t m_ba_step = 0;
 
 	float get_max_level();
@@ -888,13 +897,21 @@ public:
 
 	bool m_reset_prep_nerf_mapping = false;
 
+	bool m_add_free_space_loss = false;
+	bool m_add_sdf_loss = false;
+	
+	bool m_add_free_space_loss_tracking = false;
+	bool m_add_sdf_loss_tracking = false;
+
+    bool m_use_sdf_in_nerf = false;
+
 	void track_steps(
-	    const uint32_t cam_id, 
-	    const uint32_t target_batch_size, 
-	    const uint32_t margin_h, 
-	    const uint32_t margin_w, 
-	    const uint32_t tracking_mode, 
-	    const int num_rays_to_sample, 
+	    const uint32_t cam_id,
+	    const uint32_t target_batch_size,
+	    const uint32_t margin_h,
+	    const uint32_t margin_w,
+	    const uint32_t tracking_mode,
+	    const int num_rays_to_sample,
 	    float lr,
 	    float pos_lr,
 	    float rot_lr,
@@ -908,13 +925,14 @@ public:
 	uint32_t m_n_total_rays=0;
 	uint32_t m_n_total_rays_for_gradient=0;
 	uint32_t m_ray_counter=0;
+	uint32_t m_ray_counter_depth=0;
 	uint32_t m_super_ray_counter=0;
 	uint32_t m_rays_per_batch=0;
 	std::vector<uint32_t> m_xy_image_pixel_indices_int;
 	std::vector<uint32_t> m_xy_image_super_pixel_at_level_indices_int;
 	std::vector<uint32_t> m_existing_ray_mapping;
 	std::vector<uint32_t> m_num_rays_per_images;
-	
+
 	std::vector<float> m_gt_rgbd_at_level;
 	std::vector<float> m_rec_rgbd_at_level;
 	std::vector<float> m_rec_depth_var_at_level;

@@ -322,7 +322,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.export_values();
 
 	py::enum_<ENerfActivation>(m, "NerfActivation")
-		.value("None", ENerfActivation::None)
+		.value("none", ENerfActivation::None)
 		.value("ReLU", ENerfActivation::ReLU)
 		.value("Logistic", ENerfActivation::Logistic)
 		.value("Exponential", ENerfActivation::Exponential)
@@ -584,12 +584,18 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("reset_prep_nerf_mapping", &Testbed::m_reset_prep_nerf_mapping)
 		.def_property_readonly("loss_tracking", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar_tracking.val(); })
 		.def("track_steps", &Testbed::track_steps, py::call_guard<py::gil_scoped_release>(), "Perform SLAM tracking iterations.")
+		.def_readwrite("add_free_space_loss", &Testbed::m_add_free_space_loss)
+		.def_readwrite("add_sdf_loss", &Testbed::m_add_sdf_loss)
+		.def_readwrite("add_free_space_loss_tracking", &Testbed::m_add_free_space_loss_tracking)
+		.def_readwrite("add_sdf_loss_tracking", &Testbed::m_add_sdf_loss_tracking)
+		.def_readwrite("use_sdf_in_nerf", &Testbed::m_use_sdf_in_nerf)
 		//DEBUG
 		//DEBUG
 		.def_readonly("n_super_rays", &Testbed::m_n_super_rays)
 		.def_readonly("n_total_rays", &Testbed::m_n_total_rays)
 		.def_readonly("n_total_rays_for_gradient", &Testbed::m_n_total_rays_for_gradient)
 		.def_readonly("ray_counter", &Testbed::m_ray_counter)
+		.def_readonly("ray_counter_depth", &Testbed::m_ray_counter_depth)
 		.def_readonly("super_ray_counter", &Testbed::m_super_ray_counter)
 		.def_readonly("rays_per_batch", &Testbed::m_rays_per_batch)
 		.def_readonly("xy_image_pixel_indices_int", &Testbed::m_xy_image_pixel_indices_int)
@@ -748,6 +754,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("counters_rgb", &Testbed::Nerf::Training::counters_rgb)
 		.def_readonly("counters_rgb_ba", &Testbed::Nerf::Training::counters_rgb_ba)
 		.def_readonly("counters_rgb_tracking", &Testbed::Nerf::Training::counters_rgb_tracking)
+		.def_readwrite("free_space_supervision_lambda", &Testbed::Nerf::Training::free_space_supervision_lambda)
+		.def_readwrite("free_space_supervision_distance", &Testbed::Nerf::Training::free_space_supervision_distance)
+		.def_readwrite("truncation_distance", &Testbed::Nerf::Training::truncation_distance)
+		.def_readwrite("sdf_supervision_lambda", &Testbed::Nerf::Training::sdf_supervision_lambda)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
