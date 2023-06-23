@@ -364,6 +364,13 @@ if (NGP_BUILD_EXECUTABLE)
 	add_executable(instant-ngp src/main.cu)
 	target_link_libraries(instant-ngp PRIVATE ngp)
 
+	if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+		add_executable(debug src/debug.cu)
+		target_link_libraries(debug PRIVATE ngp)
+		target_compile_options(ngp PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+		target_compile_options(debug PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+	endif()
+
 	# Link the executable to the project directory and copy over DLLs such that instant-ngp can be invoked without going into the build folder.
 	set(NGP_BINARY_FILE "\"${CMAKE_CURRENT_SOURCE_DIR}/$<TARGET_FILE_NAME:instant-ngp>\"")
 	if (MSVC)

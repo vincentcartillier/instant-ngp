@@ -72,7 +72,7 @@ void Testbed::map(uint32_t batch_size) {
 		ScopeGuard timing_guard{[&]() {
 			m_training_prep_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count() / n_prep_to_skip);
 		}};
-
+		
 		switch (m_testbed_mode) {
 			case ETestbedMode::Nerf: training_prep_nerf_mapping(batch_size, m_stream.get()); break;
 			default: throw std::runtime_error{"Invalid training mode (for SLAM it has to be Nerf)."};

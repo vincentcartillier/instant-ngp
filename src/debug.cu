@@ -15,7 +15,6 @@ using namespace args;
 using namespace ngp;
 using namespace std;
 using namespace tcnn;
-using namespace Eigen;
 namespace fs = ::filesystem;
 
 int main(int argc, char** argv) {
@@ -100,10 +99,9 @@ int main(int argc, char** argv) {
     instant_ngp.m_nerf.sharpen = 0.f;
     instant_ngp.m_exposure = 0.f;
 
-    std::string network = "configs/nerf/base.json";
+    std::string network = "configs/nerf/base_debug.json";
     instant_ngp.reload_network_from_file(network);
 
-    instant_ngp.m_is_slam_mode = true;
     instant_ngp.m_nerf.render_with_lens_distortion = true;
     instant_ngp.m_nerf.training.depth_supervision_lambda = 1.f;
     instant_ngp.m_fov_axis = 0;
@@ -123,12 +121,12 @@ int main(int argc, char** argv) {
     float p1=0.f;
     float p2=0.f;
     float scale=0.333333f;
-    float depth_scale=5000;
+    float depth_scale=1/5000.f;
 
     int comp=0;
-    Eigen::Vector2i res;
+    ivec2 res;
     std::string image_path = "/srv/essa-lab/flash3/vcartillier3/nerf-slam/Datasets/TUM_RGBD/rgbd_dataset_freiburg1_desk/rgb/1305031453.359684.png";
-    uint8_t* img = stbi_load(image_path.c_str(), &res.x(), &res.y(), &comp, 4);
+    uint8_t* img = stbi_load(image_path.c_str(), &res.x, &res.y, &comp, 4);
 
     int wa; int ha;
     std::string depth_path = "/srv/essa-lab/flash3/vcartillier3/nerf-slam/Datasets/TUM_RGBD/rgbd_dataset_freiburg1_desk/depth/1305031453.374112.png";
@@ -151,10 +149,14 @@ int main(int argc, char** argv) {
         frame_idx, fx, fy, cx, cy, k1, k2, p1, p2
     );
 
-    Eigen::Matrix<float, 3, 4> c2w {
-        { 0.05365186, -0.18462093, 0.9813443, 2.5967727 },
-        { 0.99646974, -0.05365186, -0.06457236, 2.4037294 },
-        { 0.06457236, 0.9813443, 0.18109065, 1.6236416 }
+    mat4x3 c2w {
+        // { 0.05365186, -0.18462093, 0.9813443,  2.5967727 },
+        // { 0.99646974, -0.05365186, -0.06457236, 2.4037294 },
+        // { 0.06457236, 0.9813443,   0.18109065, 1.6236416 }
+        0.05365186, 0.99646974,0.06457236,
+        -0.18462093, -0.05365186, 0.9813443, 
+        0.9813443, -0.06457236, 0.18109065,
+        2.5967727, 2.4037294, 1.6236416 
     };
 
     instant_ngp.m_nerf.training.set_camera_extrinsics(
@@ -168,7 +170,7 @@ int main(int argc, char** argv) {
 
     comp=0;
     image_path = "/srv/essa-lab/flash3/vcartillier3/nerf-slam/Datasets/TUM_RGBD/rgbd_dataset_freiburg1_desk/rgb/1305031453.391690.png";
-    img = stbi_load(image_path.c_str(), &res.x(), &res.y(), &comp, 4);
+    img = stbi_load(image_path.c_str(), &res.x, &res.y, &comp, 4);
 
     depth_path = "/srv/essa-lab/flash3/vcartillier3/nerf-slam/Datasets/TUM_RGBD/rgbd_dataset_freiburg1_desk/depth/1305031453.404816.png";
     depth_pixels = stbi_load_16(depth_path.c_str(), &wa, &ha, &comp, 1);
@@ -190,10 +192,15 @@ int main(int argc, char** argv) {
         frame_idx, fx, fy, cx, cy, k1, k2, p1, p2
     );
 
-    Eigen::Matrix<float, 3, 4> c2w_2 {
-        { 0.05365186, -0.18462093, 0.9813443, 2.5967727 },
-        { 0.99646974, -0.05365186, -0.06457236, 2.4037294 },
-        { 0.06457236, 0.9813443, 0.18109065, 1.6236416 }
+    mat4x3 c2w_2 {
+        // { 0.05365186, -0.18462093, 0.9813443,  2.5967727 },
+        // { 0.99646974, -0.05365186, -0.06457236, 2.4037294 },
+        // { 0.06457236, 0.9813443,   0.18109065, 1.6236416 }
+        0.05365186, 0.99646974,0.06457236,
+        -0.18462093, -0.05365186, 0.9813443, 
+        0.9813443, -0.06457236, 0.18109065,
+        2.5967727, 2.4037294, 1.6236416 
+
     };
 
     // actually pose for frame#2
@@ -212,41 +219,71 @@ int main(int argc, char** argv) {
     // train mapping on first image
     tlog::info()<<" Start Mapping";
     instant_ngp.m_nerf.training.n_images_for_training = 2;
-    instant_ngp.m_nerf.training.n_images_for_training_slam = 1;
 
     std::vector<uint32_t> idx_images_for_training_slam{0};
-    instant_ngp.m_nerf.training.idx_images_for_training_slam = idx_images_for_training_slam;
+    instant_ngp.m_nerf.training.idx_images_for_mapping = idx_images_for_training_slam;
+    
+    instant_ngp.m_use_sdf_in_nerf = true;
+    instant_ngp.m_add_free_space_loss = true;
+    instant_ngp.m_add_sdf_loss = true;
+    instant_ngp.m_nerf.training.depth_supervision_lambda= 0.1;
+    instant_ngp.m_nerf.training.free_space_supervision_lambda= 10.0;
+    instant_ngp.m_nerf.training.sdf_supervision_lambda= 5000.0;
+    instant_ngp.m_nerf.training.truncation_distance = 0.05 * 2 * 0.33;
+
+    instant_ngp.m_nerf.training.depth_loss_type = ELossType::L2;
+    instant_ngp.m_nerf.density_activation = ENerfActivation::None;
 
     instant_ngp.m_train = true;
+    instant_ngp.m_train_encoding = true;
+    instant_ngp.m_train_network = true;
     uint32_t batch_size=256000;
-    for (uint32_t i=0; i<1000; ++i) {
-        instant_ngp.train(batch_size);
+    for (uint32_t i=0; i<20; ++i) {
+        instant_ngp.map(batch_size);
+        tlog::info()<<"  ----- mapping loss: "<<instant_ngp.m_loss_scalar.val();
     }
 
-    //tlog::info()<<" Render first frame";
+    tlog::info()<<" Render first frame";
+    // auto frame = instant_ngp.render_to_cpu(res.x, res.y, 8, true, -1.f, -1.f, 30.0f, 1.0f);
+
+	auto sample_start_cam_matrix = instant_ngp.m_camera;
+	auto sample_end_cam_matrix = instant_ngp.m_camera;
+	auto prev_camera_matrix = instant_ngp.m_camera;
+	
+    instant_ngp.m_windowless_render_surface.resize({res.x, res.y});
+	instant_ngp.m_windowless_render_surface.reset_accumulation();
+
+
+        instant_ngp.render_frame(
+			instant_ngp.m_stream.get(),
+			sample_start_cam_matrix,
+			sample_end_cam_matrix,
+			prev_camera_matrix,
+			instant_ngp.m_screen_center,
+			instant_ngp.m_relative_focal_length,
+			{0.0f, 0.0f, 0.0f, 1.0f},
+			{},
+			{},
+			instant_ngp.m_visualized_dimension,
+			instant_ngp.m_windowless_render_surface,
+			false
+		);
+	
 
     // train tracking on second image
     tlog::info()<<" Start Tracking";
     instant_ngp.m_nerf.training.indice_image_for_tracking_pose = 1;
     instant_ngp.m_nerf.training.extrinsic_learning_rate_pos = 0.0005;
     instant_ngp.m_nerf.training.extrinsic_learning_rate_rot = 0.001;
-    instant_ngp.m_nerf.training.separate_pos_and_rot_lr = true;
     // instant_ngp.m_nerf.training.track_loss_type = ngp.LossType.L2;
     // instant_ngp.m_nerf.training.track_depth_loss_type = ngp.LossType.L1
     instant_ngp.m_nerf.training.depth_supervision_lambda = 0.0f;
-    instant_ngp.m_sample_away_from_border_margin_w = 20;
-    instant_ngp.m_sample_away_from_border_margin_h = 20;
-    instant_ngp.m_tracking_mode=2;
-
-    instant_ngp.m_nerf.training.n_steps_between_cam_updates_tracking=25;
-    instant_ngp.m_nerf.training.rays_per_tracking_batch = 4096;
+    instant_ngp.m_tracking_mode=0;
 
     batch_size=256000 * 5;
 
-    instant_ngp.m_tracking_gaussian_pyramid_level=3;
-
     for (uint32_t i=0; i<1000; ++i) {
-        instant_ngp.track_pose(batch_size);
+        instant_ngp.track(batch_size);
     }
 
 

@@ -772,6 +772,12 @@ public:
 			
 			float sdf_supervision_lambda = 0.0f;
 
+			bool m_use_ray_counter_per_image_in_ba=false;
+			bool m_reset_ray_counters_and_gradients_for_ba=false;
+			tcnn::GPUMemory<uint32_t> m_num_rays_per_image_gpu;
+
+			uint32_t m_min_num_rays_per_image_for_pose_update = 64;
+
 
 		} training = {};
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -183,6 +183,11 @@ struct NerfDataset {
 		ray.d[1] = ray.d[2];
 		ray.d[2] = tmp;
 	}
+
+#ifdef NGP_PYTHON
+    std::vector<mat4x3> get_poses_ngp();
+#endif
+
 };
 
 NerfDataset load_nerf(const std::vector<fs::path>& jsonpaths, float sharpen_amount = 0.f);

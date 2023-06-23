@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA CORPORATION and its licensors retain all intellectual property
  * and proprietary rights in and to this software, related documentation
@@ -44,6 +44,16 @@ namespace py = pybind11;
 using namespace pybind11::literals; // to bring in the `_a` literal
 
 NGP_NAMESPACE_BEGIN
+
+
+std::vector<mat4x3> NerfDataset::get_poses_ngp() {
+    std::vector<mat4x3> result;
+    for (size_t i = 0; i < n_images; ++i) {
+        result.push_back(xforms[i].start);
+    }
+    return result;
+}
+
 
 
 void Testbed::Nerf::Training::set_image(int frame_idx, pybind11::array_t<float> img, pybind11::array_t<float> depth_img, float depth_scale) {
@@ -681,6 +691,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("desired_resolution", &NerfDataset::desired_resolution)
 		.def_readonly("from_mitsuba", &NerfDataset::from_mitsuba)
 		.def_readonly("is_hdr", &NerfDataset::is_hdr)
+        .def("get_poses_ngp", &NerfDataset::get_poses_ngp, "Return an array with all the camera poses as stored in NGP (Nx4x4)")
 		;
 
 	py::class_<Testbed::Nerf::Training> training(nerf, "Training");
@@ -758,6 +769,9 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("free_space_supervision_distance", &Testbed::Nerf::Training::free_space_supervision_distance)
 		.def_readwrite("truncation_distance", &Testbed::Nerf::Training::truncation_distance)
 		.def_readwrite("sdf_supervision_lambda", &Testbed::Nerf::Training::sdf_supervision_lambda)
+		.def_readwrite("use_ray_counter_per_image_in_ba", &Testbed::Nerf::Training::m_use_ray_counter_per_image_in_ba)
+		.def_readwrite("reset_ray_counters_and_gradients_for_ba", &Testbed::Nerf::Training::m_reset_ray_counters_and_gradients_for_ba)
+		.def_readwrite("min_num_rays_per_image_for_pose_update_in_ba", &Testbed::Nerf::Training::m_min_num_rays_per_image_for_pose_update)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
@@ -793,11 +807,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("snap_to_pixel_centers", &Testbed::Image::Training::snap_to_pixel_centers)
 		.def_readwrite("linear_colors", &Testbed::Image::Training::linear_colors)
 		;
-	
+
 	py::class_<Testbed::Nerf::Training::ErrorMap>(training, "ErrorMap")
 		.def_readwrite("is_cdf_valid", &Testbed::Nerf::Training::ErrorMap::is_cdf_valid)
 		;
-	
+
 	py::class_<Testbed::NerfCounters>(training, "NerfCounters")
 		.def_readonly("rays_per_batch", &Testbed::NerfCounters::rays_per_batch)
 		.def_readonly("measured_batch_size", &Testbed::NerfCounters::measured_batch_size)
