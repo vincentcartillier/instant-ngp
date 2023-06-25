@@ -122,11 +122,18 @@ void Testbed::training_prep_nerf_ba(uint32_t batch_size, cudaStream_t stream) {
 	float alpha = m_nerf.training.density_grid_decay;
 	uint32_t n_cascades = m_nerf.max_cascade+1;
 
-	if (m_ba_step < 256) {
-		update_density_grid_nerf_ba(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
-	} else {
-		update_density_grid_nerf_ba(alpha, NERF_GRID_N_CELLS() / 4 * n_cascades, NERF_GRID_N_CELLS() / 4 * n_cascades, stream);
-	}
+	//DEBUG	
+	//DEBUG	
+	alpha = 1.0;
+	update_density_grid_nerf_ba(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
+	//DEBUG	
+	//DEBUG	
+
+	//if (m_ba_step < 256) {
+	//	update_density_grid_nerf_ba(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
+	//} else {
+	//	update_density_grid_nerf_ba(alpha, NERF_GRID_N_CELLS() / 4 * n_cascades, NERF_GRID_N_CELLS() / 4 * n_cascades, stream);
+	//}
 }
 
 

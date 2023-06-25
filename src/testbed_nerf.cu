@@ -5718,6 +5718,7 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 			m_nerf.training.dataset.metadata_gpu.data(),
 			m_nerf.training.transforms_gpu.data(),
 			!m_use_sdf_in_nerf ? m_nerf.density_grid_bitfield.data() : nullptr, // --> DO NOT use density grid in SDF
+			//nullptr, // --> DO NOT use density grid (ie no importance sampling) //DEBUG
 			m_nerf.max_cascade,
 			m_max_level_rand_training,
 			max_level,
@@ -6553,11 +6554,16 @@ __global__ void generate_training_samples_for_tracking_gp(
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS()) {
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
-		if (density_grid_occupied_at(pos, density_grid, mip)) {
+		if (density_grid) {
+			if (density_grid_occupied_at(pos, density_grid, mip)) {
+				++j;
+				t += dt;
+			} else {
+				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+			}
+		} else {
 			++j;
 			t += dt;
-		} else {
-			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
 		}
 	}
 	if (j == 0) {
@@ -6585,12 +6591,17 @@ __global__ void generate_training_samples_for_tracking_gp(
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
-		if (density_grid_occupied_at(pos, density_grid, mip)) {
-			coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+		if (density_grid) {
+			if (density_grid_occupied_at(pos, density_grid, mip)) {
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				++j;
+				t += dt;
+			} else {
+				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+			}
+		} else {
 			++j;
 			t += dt;
-		} else {
-			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
 		}
 	}
 }
@@ -7502,6 +7513,7 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		m_nerf.training.dataset.metadata_gpu.data(),
 		m_nerf.training.transforms_gpu.data(),
 		m_nerf.density_grid_bitfield.data(),
+		//nullptr, //DEBUG
 		m_nerf.max_cascade,
 		m_nerf.cone_angle_constant,
 		m_distortion.view(),
@@ -8776,6 +8788,16 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
     std::sort(m_nerf.training.idx_images_for_mapping.begin(), m_nerf.training.idx_images_for_mapping.end());
     std::sort(m_nerf.training.idx_images_for_mapping_prev.begin(), m_nerf.training.idx_images_for_mapping_prev.end());
 
+
+	//DEBUG	
+	//DEBUG	
+	if (m_training_step == 0) {
+		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
+	}
+	//DEBUG	
+	//DEBUG	
+
+	/*
 	if (m_ba_step == 0 || m_nerf.training.idx_images_for_mapping != m_nerf.training.idx_images_for_mapping_prev) {
 		m_nerf.training.idx_images_for_mapping_prev = m_nerf.training.idx_images_for_mapping;
 		if (m_ba_step == 0) {
@@ -8801,6 +8823,7 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
 		}
 	}
+	*/
 
 	uint32_t n_steps = 1;
 	for (uint32_t i = 0; i < n_steps; ++i) {
@@ -8880,12 +8903,12 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 
 	//DEBUG	
 	//DEBUG	
-	//if (m_training_step == 0) {
-	//	CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
-	//}
+	if (m_training_step == 0) {
+		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
+	}
 	//DEBUG	
 	//DEBUG	
-
+	/*
 	if (m_training_step == 0 || m_nerf.training.idx_images_for_mapping != m_nerf.training.idx_images_for_mapping_prev) {
 		m_nerf.training.idx_images_for_mapping_prev = m_nerf.training.idx_images_for_mapping;
 		if (m_training_step == 0) {
@@ -8911,6 +8934,7 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
 		}
 	}
+	*/
 
 	uint32_t n_steps = 1;
 	for (uint32_t i = 0; i < n_steps; ++i) {
@@ -9502,7 +9526,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		counters.n_rays_total = 0;
 	}
 
-	uint32_t n_rays_total = counters.n_rays_total;
+	//uint32_t n_rays_total = counters.n_rays_total;
 	counters.n_rays_total += counters.rays_per_batch;
 	m_nerf.training.n_rays_since_error_map_update += counters.rays_per_batch;
 
