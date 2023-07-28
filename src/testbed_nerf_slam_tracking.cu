@@ -243,13 +243,13 @@ void Testbed::track_steps(
     //assumes the camera pose of cam_id has been initialized already
 
     // init variables before tracking
-    m_nerf.training.sample_image_proportional_to_error = False;
-    m_nerf.training.optimize_extrinsics = False;
-    m_nerf.training.optimize_exposure = False;
-    m_nerf.training.optimize_extra_dims = False;
-    m_nerf.training.optimize_distortion = False;
-    m_nerf.training.optimize_focal_length = False;
-    m_nerf.training.include_sharpness_in_error = False;
+    m_nerf.training.sample_image_proportional_to_error = false;
+    m_nerf.training.optimize_extrinsics = false;
+    m_nerf.training.optimize_exposure = false;
+    m_nerf.training.optimize_extra_dims = false;
+    m_nerf.training.optimize_distortion = false;
+    m_nerf.training.optimize_focal_length = false;
+    m_nerf.training.include_sharpness_in_error = false;
     m_nerf.training.indice_image_for_tracking_pose = cam_id;
     m_nerf.training.n_steps_between_cam_updates = 1;
     m_nerf.training.n_steps_since_cam_update = 0;

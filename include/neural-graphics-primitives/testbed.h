@@ -199,8 +199,12 @@ public:
 			int glow_mode,
 			const float* extra_dims_gpu,
 			cudaStream_t stream,
+			//SDF
             const bool use_sdf_in_nerf,
-            float truncation_distance
+            float truncation_distance,
+			//Custom Ray marching
+			const bool use_custom_ray_marching,
+			const float dt_for_regular_sampling
 		);
 
 		void enlarge(size_t n_elements, uint32_t padded_output_width, uint32_t n_extra_dims, cudaStream_t stream);
@@ -406,6 +410,7 @@ public:
 	void generate_training_samples_sdf(vec3* positions, float* distances, uint32_t n_to_generate, cudaStream_t stream, bool uniform_only);
 	void update_density_grid_nerf(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	void update_density_grid_mean_and_bitfield(cudaStream_t stream);
+	void update_density_grid_mean_and_bitfield_slam(cudaStream_t stream);
 	void mark_density_grid_in_sphere_empty(const vec3& pos, float radius, cudaStream_t stream);
 
 	struct NerfCounters {
@@ -769,7 +774,7 @@ public:
 			float free_space_supervision_lambda = 0.0f;
 			float free_space_supervision_distance = 0.0f;
 			float truncation_distance = 0.05f;
-			
+
 			float sdf_supervision_lambda = 0.0f;
 
 			bool m_use_ray_counter_per_image_in_ba=false;
@@ -778,6 +783,21 @@ public:
 
 			uint32_t m_min_num_rays_per_image_for_pose_update = 64;
 
+			float truncation_distance_for_depth_guided_sampling = 0.05f;
+			float dt_for_depth_guided_sampling = 0.01f;
+			uint32_t num_samples_with_depth_guided_sampling = 10;
+
+			bool m_use_pose_scheduler_in_mapping=false;
+            float m_pose_scheduler_coef=0.33;
+            uint32_t m_pose_scheduler_norm=128;
+
+			float extrinsic_learning_rate_ba_pos = 1e-3f;
+			float extrinsic_learning_rate_ba_rot = 1e-3f;
+
+			uint32_t n_samples_for_regular_sampling = 128;
+			float dt_for_regular_sampling = 0.1;
+
+            bool m_use_gradient_clipping_for_extrinsics=false;
 
 		} training = {};
 
@@ -810,6 +830,15 @@ public:
 		float glow_y_cutoff = 0.f;
 		int glow_mode = 0;
 
+		// == DEBUG
+		// == DEBUG
+		std::vector<float> density_grid_cpu;
+		std::vector<uint8_t> density_grid_bitfield_cpu;
+		std::vector<uint8_t> density_grid_unvisible_regions_bool_cpu;
+		// == DEBUG
+		// == DEBUG
+		tcnn::GPUMemory<uint8_t> density_grid_unvisible_regions_bool;
+
 	} m_nerf;
 
 	/*
@@ -828,6 +857,7 @@ public:
 	void train_nerf_slam_step(uint32_t target_batch_size, NerfCounters& counters, cudaStream_t stream);
 	void training_prep_nerf_mapping(uint32_t batch_size, cudaStream_t stream);
 	void update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
+	void density_grid_culling_using_keyframes();
 
 	void track(uint32_t batch_size);
 	void train_nerf_slam_tracking(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -905,11 +935,14 @@ public:
 
 	bool m_add_free_space_loss = false;
 	bool m_add_sdf_loss = false;
-	
+
 	bool m_add_free_space_loss_tracking = false;
 	bool m_add_sdf_loss_tracking = false;
 
     bool m_use_sdf_in_nerf = false;
+    bool m_use_density_in_nerf_sampling = true;
+
+	bool m_use_depth_guided_sampling = false;
 
 	void track_steps(
 	    const uint32_t cam_id,
@@ -925,6 +958,12 @@ public:
 	    const std::vector<std::map<std::string, float> >& tracking_hyperparameters
 	);
 
+	bool m_keep_data_on_cpu=false;
+	void send_image_to_gpu(const uint32_t image_id);
+	void remove_image_from_gpu(const uint32_t image_id);
+
+	bool m_use_custom_ray_marching=false;
+
 	// == DEBUG
 	// == DEBUG
 	uint32_t m_n_super_rays=0;
@@ -935,9 +974,11 @@ public:
 	uint32_t m_super_ray_counter=0;
 	uint32_t m_rays_per_batch=0;
 	std::vector<uint32_t> m_xy_image_pixel_indices_int;
+	std::vector<float>    m_xy_image_pixel_indices_float;
 	std::vector<uint32_t> m_xy_image_super_pixel_at_level_indices_int;
 	std::vector<uint32_t> m_existing_ray_mapping;
 	std::vector<uint32_t> m_num_rays_per_images;
+	std::vector<uint32_t> m_image_id_sample;
 
 	std::vector<float> m_gt_rgbd_at_level;
 	std::vector<float> m_rec_rgbd_at_level;
@@ -945,6 +986,17 @@ public:
 
 	vec3 m_pos_gradient;
 	vec3 m_rot_gradient;
+
+	std::vector<uint8_t> get_image_from_gpu(const uint32_t image_d);
+	std::vector<float> get_depth_from_gpu(const uint32_t image_d);
+
+	// get the coords samples for each ray
+	std::vector<float> m_coords_cpu;
+	std::vector<float> m_sample_z_vals_cpu;
+	std::vector<float> m_sample_outputs_cpu;
+	std::vector<uint32_t> m_numsteps_cpu;
+	std::vector<uint32_t> m_numsteps_compacted_cpu;
+	bool m_debug=false;
 	// == DEBUG
 	// == DEBUG
 

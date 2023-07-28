@@ -862,4 +862,457 @@ void NerfDataset::update_metadata(int first, int last) {
 	CUDA_CHECK_THROW(cudaMemcpy(metadata_gpu.data() + first, metadata.data() + first, n * sizeof(TrainingImageMetadata), cudaMemcpyHostToDevice));
 }
 
+
+
+
+
+
+
+NerfDataset load_nerf_cpu(const std::vector<fs::path>& jsonpaths, float sharpen_amount) {
+	if (jsonpaths.empty()) {
+		throw std::runtime_error{"Cannot load NeRF data from an empty set of paths."};
+	}
+
+	tlog::info() << "Loading NeRF dataset from";
+
+	NerfDataset result{};
+
+	std::ifstream f{native_string(jsonpaths.front())};
+	nlohmann::json transforms = nlohmann::json::parse(f, nullptr, true, true);
+
+	ThreadPool pool;
+	
+	std::vector<LoadedImageInfoCPU> images;
+	LoadedImageInfoCPU info = {};
+
+	if (transforms["camera"].is_array()) {
+		throw std::runtime_error{"hdf5 is no longer supported. please use the hdf52nerf.py conversion script"};
+	}
+
+	// nerf original format
+	std::vector<nlohmann::json> jsons;
+	std::transform(
+		jsonpaths.begin(), jsonpaths.end(),
+		std::back_inserter(jsons), [](const auto& path) {
+			return nlohmann::json::parse(std::ifstream{native_string(path)}, nullptr, true, true);
+		}
+	);
+
+	std::vector<std::string> supported_image_formats = {
+		"png", "jpg", "jpeg", "bmp", "gif", "tga", "pic", "pnm", "psd", "exr",
+	};
+
+	auto resolve_path = [&supported_image_formats](const fs::path& base_path, const fs::path& local_path) {
+		fs::path path = local_path.is_absolute() ? local_path : (base_path / local_path);
+		if (path.extension().empty() && !path.exists()) {
+			for (const auto& format : supported_image_formats) {
+				if (path.with_extension(format).exists()) {
+					return path.with_extension(format);
+				}
+			}
+		}
+
+		return path;
+	};
+
+	result.n_images = 0;
+	for (size_t i = 0; i < jsons.size(); ++i) {
+		auto& json = jsons[i];
+		fs::path base_path = jsonpaths[i].parent_path();
+
+
+		if (!json.contains("frames") || !json["frames"].is_array()) {
+			tlog::warning() << "  " << jsonpaths[i] << " does not contain any frames. Skipping.";
+			continue;
+		}
+		tlog::info() << "  " << jsonpaths[i];
+		auto& frames = json["frames"];
+
+		float sharpness_discard_threshold = json.value("sharpness_discard_threshold", 0.0f); // Keep all by default
+
+		std::sort(frames.begin(), frames.end(), [](const auto& frame1, const auto& frame2) {
+			return SI::natural::compare<std::string>(frame1["file_path"], frame2["file_path"]);
+		});
+
+		for (auto&& frame : frames) {
+			// Compatibility with Windows paths on Linux. (Breaks linux filenames with "\\" in them, which is acceptable for us.)
+			frame["file_path"] = replace_all(frame["file_path"], "\\", "/");
+		}
+
+		if (json.contains("n_frames")) {
+			size_t cull_idx = std::min(frames.size(), (size_t)json["n_frames"]);
+			frames.get_ptr<nlohmann::json::array_t*>()->resize(cull_idx);
+		}
+
+		if (frames[0].contains("sharpness")) {
+			auto frames_copy = frames;
+			frames.clear();
+
+			// Kill blurrier frames than their neighbors
+			const int neighborhood_size = 3;
+			for (int i = 0; i < (int)frames_copy.size(); ++i) {
+				float mean_sharpness = 0.0f;
+				int mean_start = std::max(0, i-neighborhood_size);
+				int mean_end = std::min(i + neighborhood_size, (int)frames_copy.size() - 1);
+				for (int j = mean_start; j < mean_end; ++j) {
+					mean_sharpness += float(frames_copy[j].value("sharpness", 1.0));
+				}
+
+				mean_sharpness /= (mean_end - mean_start);
+
+				if (resolve_path(base_path, frames_copy[i]["file_path"]).exists() && frames_copy[i].value("sharpness", 1.0) > sharpness_discard_threshold * mean_sharpness) {
+					frames.emplace_back(frames_copy[i]);
+				} else {
+					// tlog::info() << "discarding frame " << frames_copy[i]["file_path"];
+					// fs::remove(resolve_path(base_path, frames_copy[i]["file_path"]));
+				}
+			}
+		}
+
+		for (size_t i = 0; i < frames.size(); ++i) {
+			result.paths.emplace_back(frames[i]["file_path"]);
+		}
+
+		result.n_images += frames.size();
+	}
+
+	images.resize(result.n_images);
+	result.xforms.resize(result.n_images);
+	result.metadata.resize(result.n_images);
+	result.pixelmemory.resize(result.n_images);
+	result.depthmemory.resize(result.n_images);
+	result.raymemory.resize(result.n_images);
+
+	result.scale = NERF_SCALE;
+	result.offset = {0.5f, 0.5f, 0.5f};
+
+	std::vector<std::future<void>> futures;
+
+	size_t image_idx = 0;
+
+	if (result.n_images == 0) {
+		throw std::invalid_argument{"No training images were found for NeRF training!"};
+	}
+
+	auto progress = tlog::progress(result.n_images);
+
+	result.from_mitsuba = false;
+	bool fix_premult = false;
+	bool enable_ray_loading = true;
+	bool enable_depth_loading = true;
+	std::atomic<int> n_loaded{0};
+	BoundingBox cam_aabb;
+	for (size_t i = 0; i < jsons.size(); ++i) {
+		auto& json = jsons[i];
+
+		fs::path base_path = jsonpaths[i].parent_path();
+		std::string jp = jsonpaths[i].str();
+		auto lastdot = jp.find_last_of('.'); if (lastdot==std::string::npos) lastdot = jp.length();
+		auto lastunderscore = jp.find_last_of('_'); if (lastunderscore == std::string::npos) lastunderscore=lastdot; else lastunderscore++;
+		std::string part_after_underscore(jp.begin()+lastunderscore,jp.begin()+lastdot);
+
+		if (json.contains("enable_ray_loading")) {
+			enable_ray_loading = bool(json["enable_ray_loading"]);
+			tlog::info() << "enable_ray_loading=" << enable_ray_loading;
+		}
+		if (json.contains("enable_depth_loading")) {
+			enable_depth_loading = bool(json["enable_depth_loading"]);
+			tlog::info() << "enable_depth_loading is " << enable_depth_loading;
+		}
+
+		if (json.contains("normal_mts_args")) {
+			result.from_mitsuba = true;
+		}
+
+		if (json.contains("fix_premult")) {
+			fix_premult = (bool)json["fix_premult"];
+		}
+
+		if (result.from_mitsuba) {
+			result.scale = 0.66f;
+			result.offset = {0.25f * result.scale, 0.25f * result.scale, 0.25f * result.scale};
+		}
+
+		if (json.contains("render_aabb")) {
+			result.render_aabb.min={float(json["render_aabb"][0][0]),float(json["render_aabb"][0][1]),float(json["render_aabb"][0][2])};
+			result.render_aabb.max={float(json["render_aabb"][1][0]),float(json["render_aabb"][1][1]),float(json["render_aabb"][1][2])};
+		}
+
+		if (json.contains("sharpen")) {
+			sharpen_amount = json["sharpen"];
+		}
+
+		if (json.contains("white_transparent")) {
+			info.white_transparent = bool(json["white_transparent"]);
+		}
+
+		if (json.contains("black_transparent")) {
+			info.black_transparent = bool(json["black_transparent"]);
+		}
+
+		if (json.contains("scale")) {
+			result.scale = json["scale"];
+		}
+
+		if (json.contains("importance_sampling")) {
+			result.wants_importance_sampling = json["importance_sampling"];
+		}
+
+		if (json.contains("n_extra_learnable_dims")) {
+			result.n_extra_learnable_dims = json["n_extra_learnable_dims"];
+		}
+
+		Lens lens = {};
+		vec2 principal_point = vec2(0.5f);
+		vec4 rolling_shutter = vec4(0.0f);
+
+		if (json.contains("integer_depth_scale")) {
+			info.depth_scale = json["integer_depth_scale"];
+		}
+
+		// Lens parameters
+		read_lens(json, lens, principal_point, rolling_shutter);
+
+		if (json.contains("aabb_scale")) {
+			result.aabb_scale = json["aabb_scale"];
+		}
+
+		if (json.contains("offset")) {
+			result.offset =
+				json["offset"].is_array() ?
+				vec3{float(json["offset"][0]), float(json["offset"][1]), float(json["offset"][2])} :
+				vec3{float(json["offset"]), float(json["offset"]), float(json["offset"])};
+		}
+
+		if (json.contains("aabb")) {
+			// map the given aabb of the form [[minx,miny,minz],[maxx,maxy,maxz]] via an isotropic scale and translate to fit in the (0,0,0)-(1,1,1) cube, with the given center at 0.5,0.5,0.5
+			const auto& aabb=json["aabb"];
+			float length = std::max(0.000001f,std::max(std::max(std::abs(float(aabb[1][0])-float(aabb[0][0])),std::abs(float(aabb[1][1])-float(aabb[0][1]))),std::abs(float(aabb[1][2])-float(aabb[0][2]))));
+			result.scale = 1.f/length;
+			result.offset = { ((float(aabb[1][0])+float(aabb[0][0]))*0.5f)*-result.scale + 0.5f , ((float(aabb[1][1])+float(aabb[0][1]))*0.5f)*-result.scale + 0.5f,((float(aabb[1][2])+float(aabb[0][2]))*0.5f)*-result.scale + 0.5f};
+		}
+
+		if (json.contains("frames") && json["frames"].is_array()) {
+			for (int j = 0; j < json["frames"].size(); ++j) {
+				auto& frame = json["frames"][j];
+				nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
+				nlohmann::json& jsonmatrix_end = frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
+				const vec3 p = vec3{float(jsonmatrix_start[0][3]), float(jsonmatrix_start[1][3]), float(jsonmatrix_start[2][3])} * result.scale + result.offset;
+				const vec3 q = vec3{float(jsonmatrix_end[0][3]), float(jsonmatrix_end[1][3]), float(jsonmatrix_end[2][3])} * result.scale + result.offset;
+				cam_aabb.enlarge(p);
+				cam_aabb.enlarge(q);
+			}
+		}
+
+		if (json.contains("up")) {
+			// axes are permuted as for the xforms below
+			result.up[0] = float(json["up"][1]);
+			result.up[1] = float(json["up"][2]);
+			result.up[2] = float(json["up"][0]);
+		}
+
+		if (json.contains("envmap") && !any(equal(result.envmap_resolution, ivec2(0)))) {
+			fs::path envmap_path = resolve_path(base_path, json["envmap"]);
+			if (!envmap_path.exists()) {
+				throw std::runtime_error{fmt::format("Environment map {} does not exist.", envmap_path.str())};
+			}
+
+			if (equals_case_insensitive(envmap_path.extension(), "exr")) {
+				result.envmap_data = load_exr_gpu(envmap_path, &result.envmap_resolution.x, &result.envmap_resolution.y);
+				result.is_hdr = true;
+			} else {
+				result.envmap_data = load_stbi_gpu(envmap_path, &result.envmap_resolution.x, &result.envmap_resolution.y);
+			}
+		}
+
+
+		if (json.contains("frames") && json["frames"].is_array()) pool.parallel_for_async<size_t>(0, json["frames"].size(), [&progress, &n_loaded, &result, &images, &json, &resolve_path, &supported_image_formats, base_path, image_idx, info, rolling_shutter, principal_point, lens, part_after_underscore, fix_premult, enable_depth_loading, enable_ray_loading](size_t i) {
+			size_t i_img = i + image_idx;
+			auto& frame = json["frames"][i];
+			LoadedImageInfoCPU& dst = images[i_img];
+			dst = info; // copy defaults
+
+			std::string json_provided_path = frame["file_path"];
+			if (json_provided_path == "") {
+				char buf[256];
+				snprintf(buf, 256, "%s_%03d/rgba.png", part_after_underscore.c_str(), (int)i);
+				json_provided_path = buf;
+			}
+
+			fs::path path = resolve_path(base_path, json_provided_path);
+			if (!path.exists()) {
+				throw std::runtime_error{fmt::format("Could not find image file '{}'.", path.str())};
+			}
+
+			int comp = 0;
+			if (equals_case_insensitive(path.extension(), "exr")) {
+				dst.pixels = load_exr_to_gpu(&dst.res.x, &dst.res.y, path.str().c_str(), fix_premult);
+				dst.image_type = EImageDataType::Half;
+				dst.image_data_on_gpu = true;
+				result.is_hdr = true;
+			} else {
+				dst.image_data_on_gpu = false;
+				uint8_t* img = load_stbi(path, &dst.res.x, &dst.res.y, &comp, 4);
+				if (!img) {
+					throw std::runtime_error{"Could not open image file: "s + std::string{stbi_failure_reason()}};
+				}
+
+				fs::path alphapath = resolve_path(base_path, fmt::format("{}.alpha.{}", frame["file_path"], path.extension()));
+				if (alphapath.exists()) {
+					int wa = 0, ha = 0;
+					uint8_t* alpha_img = load_stbi(alphapath, &wa, &ha, &comp, 4);
+					if (!alpha_img) {
+						throw std::runtime_error{"Could not load alpha image "s + alphapath.str()};
+					}
+
+					ScopeGuard mem_guard{[&]() { stbi_image_free(alpha_img); }};
+					if (wa != dst.res.x || ha != dst.res.y) {
+						throw std::runtime_error{fmt::format("Alpha image {} has wrong resolution.", alphapath.str())};
+					}
+
+					tlog::success() << "Alpha loaded from " << alphapath;
+					for (int i = 0; i < compMul(dst.res); ++i) {
+						img[i*4+3] = (uint8_t)(255.0f*srgb_to_linear(alpha_img[i*4]*(1.f/255.f))); // copy red channel of alpha to alpha.png to our alpha channel
+					}
+				}
+
+				fs::path maskpath = path.parent_path() / fmt::format("dynamic_mask_{}.png", path.basename());
+				if (maskpath.exists()) {
+					int wa = 0, ha = 0;
+					uint8_t* mask_img = load_stbi(maskpath, &wa, &ha, &comp, 4);
+					if (!mask_img) {
+						throw std::runtime_error{fmt::format("Dynamic mask {} could not be loaded.", maskpath.str())};
+					}
+
+					ScopeGuard mem_guard{[&]() { stbi_image_free(mask_img); }};
+					if (wa != dst.res.x || ha != dst.res.y) {
+						throw std::runtime_error{fmt::format("Dynamic mask {} has wrong resolution.", maskpath.str())};
+					}
+
+					dst.mask_color = 0x00FF00FF; // HOT PINK
+					for (int i = 0; i < compMul(dst.res); ++i) {
+						if (mask_img[i*4] != 0 || mask_img[i*4+1] != 0 || mask_img[i*4+2] != 0) {
+							*(uint32_t*)&img[i*4] = dst.mask_color;
+						}
+					}
+				}
+
+				dst.pixels = img;
+				dst.image_type = EImageDataType::Byte;
+			}
+
+			if (!dst.pixels) {
+				throw std::runtime_error{fmt::format("Could not load image file '{}'.", path.str())};
+			}
+
+			if (enable_depth_loading && info.depth_scale > 0.f && frame.contains("depth_path")) {
+				fs::path depthpath = resolve_path(base_path, frame["depth_path"]);
+				if (depthpath.exists()) {
+					int wa = 0, ha = 0;
+					dst.depth_pixels = load_stbi_16(depthpath, &wa, &ha, &comp, 1);
+					if (!dst.depth_pixels) {
+						throw std::runtime_error{fmt::format("Could not load depth image '{}'.", depthpath.str())};
+					}
+
+					if (wa != dst.res.x || ha != dst.res.y) {
+						throw std::runtime_error{fmt::format("Depth image {} has wrong resolution.", depthpath.str())};
+					}
+				}
+			}
+
+			fs::path rayspath = path.parent_path() / fmt::format("rays_{}.dat", path.basename());
+			if (enable_ray_loading && rayspath.exists()) {
+				uint32_t n_pixels = compMul(dst.res);
+				dst.rays = (Ray*)malloc(n_pixels * sizeof(Ray));
+
+				std::ifstream rays_file{native_string(rayspath), std::ios::binary};
+				rays_file.read((char*)dst.rays, n_pixels * sizeof(Ray));
+
+				std::streampos fsize = 0;
+				fsize = rays_file.tellg();
+				rays_file.seekg(0, std::ios::end);
+				fsize = rays_file.tellg() - fsize;
+
+				if (fsize > 0) {
+					tlog::warning() << fsize << " bytes remaining in rays file " << rayspath;
+				}
+
+				for (uint32_t px = 0; px < n_pixels; ++px) {
+					result.nerf_ray_to_ngp(dst.rays[px]);
+				}
+
+				result.has_rays = true;
+			}
+
+			nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
+			nlohmann::json& jsonmatrix_end = frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
+
+			if (frame.contains("driver_parameters")) {
+				vec3 light_dir(
+					frame["driver_parameters"].value("LightX", 0.f),
+					frame["driver_parameters"].value("LightY", 0.f),
+					frame["driver_parameters"].value("LightZ", 0.f)
+				);
+				result.metadata[i_img].light_dir = result.nerf_direction_to_ngp(normalize(light_dir));
+				result.has_light_dirs = true;
+				result.n_extra_learnable_dims = 0;
+			}
+
+			bool got_fl = read_focal_length(json, result.metadata[i_img].focal_length, dst.res);
+			got_fl |= read_focal_length(frame, result.metadata[i_img].focal_length, dst.res);
+			if (!got_fl) {
+				throw std::runtime_error{"Couldn't read fov."};
+			}
+
+			for (int m = 0; m < 3; ++m) {
+				for (int n = 0; n < 4; ++n) {
+					result.xforms[i_img].start[n][m] = float(jsonmatrix_start[m][n]);
+					result.xforms[i_img].end[n][m] = float(jsonmatrix_end[m][n]);
+				}
+			}
+
+			// set these from the base settings
+			result.metadata[i_img].rolling_shutter = rolling_shutter;
+			result.metadata[i_img].principal_point = principal_point;
+			result.metadata[i_img].lens = lens;
+			// see if there is a per-frame override
+			read_lens(frame, result.metadata[i_img].lens, result.metadata[i_img].principal_point, result.metadata[i_img].rolling_shutter);
+
+			result.xforms[i_img].start = result.nerf_matrix_to_ngp(result.xforms[i_img].start);
+			result.xforms[i_img].end = result.nerf_matrix_to_ngp(result.xforms[i_img].end);
+
+			progress.update(++n_loaded);
+		}, futures);
+
+		if (json.contains("frames")) {
+			image_idx += json["frames"].size();
+		}
+
+	}
+
+	wait_all(futures);
+
+	tlog::success() << "Loaded " << images.size() << " images after " << tlog::durationToString(progress.duration());
+	tlog::info() << "  cam_aabb=" << cam_aabb;
+
+	if (result.has_rays) {
+		tlog::success() << "Loaded per-pixel rays.";
+	}
+	if (!images.empty() && images[0].mask_color) {
+		tlog::success() << "Loaded dynamic masks.";
+	}
+
+	result.sharpness_resolution = { 128, 72 };
+	result.sharpness_data.enlarge( result.sharpness_resolution.x * result.sharpness_resolution.y *  result.n_images );
+
+	result.images_info = images;
+
+	return result;
+}
+
+
+
+
+
+
 NGP_NAMESPACE_END

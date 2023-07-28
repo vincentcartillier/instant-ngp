@@ -126,19 +126,38 @@ void Testbed::training_prep_nerf_mapping(uint32_t batch_size, cudaStream_t strea
 	float alpha = m_nerf.training.density_grid_decay;
 	uint32_t n_cascades = m_nerf.max_cascade+1;
 
-
 	//DEBUG	
 	//DEBUG	
-	alpha = 1.0;
+	//alpha = 1.0;
 	update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
 	//DEBUG	
 	//DEBUG	
 
-	// if (m_training_step < 256) {
-	// 	update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
-	// } else {
-	// 	update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() / 4 * n_cascades, NERF_GRID_N_CELLS() / 4 * n_cascades, stream);
-	// }
+	//if (m_training_step < 256) {
+	//	update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
+	//} else {
+	//	update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() / 4 * n_cascades, NERF_GRID_N_CELLS() / 4 * n_cascades, stream);
+	//}
+	//if (m_training_step < 1) {
+	//	update_density_grid_nerf_mapping(alpha, NERF_GRID_N_CELLS() * n_cascades, 0, stream);
+	//}
+
+	if (m_debug) {
+		// send density_grid to CPU for debugging 
+		const uint32_t n_elements = NERF_GRID_N_CELLS() * n_cascades;
+		m_nerf.density_grid_cpu.resize(n_elements);
+		m_nerf.density_grid_bitfield_cpu.resize(n_elements);
+		m_nerf.density_grid_unvisible_regions_bool_cpu.resize(n_elements);
+		m_nerf.density_grid.copy_to_host(m_nerf.density_grid_cpu);
+		m_nerf.density_grid_bitfield.copy_to_host(m_nerf.density_grid_bitfield_cpu);
+		m_nerf.density_grid_unvisible_regions_bool.copy_to_host(m_nerf.density_grid_unvisible_regions_bool_cpu);
+        //CUDA_CHECK_THROW(
+        //   cudaMemcpy( m_nerf.density_grid_unvisible_regions_bool_cpu.data(), 
+        //               m_nerf.density_grid_unvisible_regions_bool.data(), 
+        //               n_elements * sizeof(bool), cudaMemcpyDeviceToHost)
+        //);
+	}
+
 }
 
 NGP_NAMESPACE_END

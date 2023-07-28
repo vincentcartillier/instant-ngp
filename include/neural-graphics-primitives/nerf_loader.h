@@ -62,10 +62,28 @@ inline size_t depth_type_size(EDepthDataType type) {
 	}
 }
 
+
+
+struct LoadedImageInfoCPU {
+	ivec2 res = ivec2(0);
+	bool image_data_on_gpu = false;
+	EImageDataType image_type = EImageDataType::None;
+	bool white_transparent = false;
+	bool black_transparent = false;
+	uint32_t mask_color = 0;
+	void *pixels = nullptr;
+	uint16_t *depth_pixels = nullptr;
+	Ray *rays = nullptr;
+	float depth_scale = -1.f;
+};
+
+
 struct NerfDataset {
 	bool is_same(const NerfDataset& other) {
 		return xforms == other.xforms && paths == other.paths;
 	}
+
+	std::vector<LoadedImageInfoCPU> images_info;
 
 	std::vector<tcnn::GPUMemory<Ray>> raymemory;
 	std::vector<tcnn::GPUMemory<uint8_t>> pixelmemory;
@@ -104,7 +122,7 @@ struct NerfDataset {
 	}
 
 	void set_training_image(int frame_idx, const ivec2& image_resolution, const void* pixels, const void* depth_pixels, float depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount = 0.f, bool white_transparent = false, bool black_transparent = false, uint32_t mask_color = 0, const Ray *rays = nullptr);
-
+	
 	vec3 nerf_direction_to_ngp(const vec3& nerf_dir) {
 		vec3 result = nerf_dir;
 		if (from_mitsuba) {
@@ -191,6 +209,7 @@ struct NerfDataset {
 };
 
 NerfDataset load_nerf(const std::vector<fs::path>& jsonpaths, float sharpen_amount = 0.f);
+NerfDataset load_nerf_cpu(const std::vector<fs::path>& jsonpaths, float sharpen_amount = 0.f);
 NerfDataset create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
 
 NGP_NAMESPACE_END

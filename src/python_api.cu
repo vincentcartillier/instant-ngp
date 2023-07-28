@@ -599,8 +599,17 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("add_free_space_loss_tracking", &Testbed::m_add_free_space_loss_tracking)
 		.def_readwrite("add_sdf_loss_tracking", &Testbed::m_add_sdf_loss_tracking)
 		.def_readwrite("use_sdf_in_nerf", &Testbed::m_use_sdf_in_nerf)
+		.def_readwrite("use_density_in_nerf_sampling", &Testbed::m_use_density_in_nerf_sampling)
+		.def_readwrite("use_depth_guided_sampling", &Testbed::m_use_depth_guided_sampling)
+		.def_readwrite("use_custom_ray_marching", &Testbed::m_use_custom_ray_marching)
+		.def("density_grid_culling_using_keyframes", &Testbed::density_grid_culling_using_keyframes, py::call_guard<py::gil_scoped_release>(), "Cull the density grid based on the viewing frustrum of KF.")
+		.def_readwrite("keep_data_on_cpu", &Testbed::m_keep_data_on_cpu)
+		.def("send_image_to_gpu", &Testbed::send_image_to_gpu,  py::arg("image_id"), "send that image to GPU.")
+		.def("remove_image_from_gpu", &Testbed::remove_image_from_gpu,  py::arg("image_id"), "Remove that image from GPU.")
 		//DEBUG
 		//DEBUG
+		.def("get_image_from_gpu", &Testbed::get_image_from_gpu,  py::arg("image_id"), "Get that image from GPU.")
+		.def("get_depth_from_gpu", &Testbed::get_depth_from_gpu,  py::arg("image_id"), "Get that image Depth from GPU.")
 		.def_readonly("n_super_rays", &Testbed::m_n_super_rays)
 		.def_readonly("n_total_rays", &Testbed::m_n_total_rays)
 		.def_readonly("n_total_rays_for_gradient", &Testbed::m_n_total_rays_for_gradient)
@@ -609,6 +618,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("super_ray_counter", &Testbed::m_super_ray_counter)
 		.def_readonly("rays_per_batch", &Testbed::m_rays_per_batch)
 		.def_readonly("xy_image_pixel_indices_int", &Testbed::m_xy_image_pixel_indices_int)
+		.def_readonly("xy_image_pixel_indices_float", &Testbed::m_xy_image_pixel_indices_float)
 		.def_readonly("xy_image_super_pixel_at_level_indices_int", &Testbed::m_xy_image_super_pixel_at_level_indices_int)
 		.def_readonly("existing_ray_mapping", &Testbed::m_existing_ray_mapping)
 		.def_readonly("num_rays_per_images", &Testbed::m_num_rays_per_images)
@@ -617,6 +627,13 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("rec_depth_var_at_level", &Testbed::m_rec_depth_var_at_level)
 		.def_readonly("pos_gradient", &Testbed::m_pos_gradient)
 		.def_readonly("rot_gradient", &Testbed::m_rot_gradient)
+		.def_readonly("coords", &Testbed::m_coords_cpu)
+		.def_readonly("sample_z_vals", &Testbed::m_sample_z_vals_cpu)
+		.def_readonly("sample_outputs", &Testbed::m_sample_outputs_cpu)
+		.def_readonly("numsteps", &Testbed::m_numsteps_cpu)
+		.def_readonly("numsteps_compacted", &Testbed::m_numsteps_compacted_cpu)
+		.def_readonly("image_id_sample", &Testbed::m_image_id_sample)
+		.def_readwrite("debug_mode", &Testbed::m_debug)
 		//DEBUG
 		//DEBUG
 		;
@@ -648,6 +665,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("visualize_cameras", &Testbed::Nerf::visualize_cameras)
 		.def_readwrite("glow_y_cutoff", &Testbed::Nerf::glow_y_cutoff)
 		.def_readwrite("glow_mode", &Testbed::Nerf::glow_mode)
+		.def_readwrite("max_cascade", &Testbed::Nerf::max_cascade)
+		.def_readwrite("density_grid", &Testbed::Nerf::density_grid_cpu)
+		.def_readwrite("density_grid_bitfield", &Testbed::Nerf::density_grid_bitfield_cpu)
+		.def_readwrite("density_grid_unvisible_regions", &Testbed::Nerf::density_grid_unvisible_regions_bool_cpu)
 		;
 
 	py::class_<BRDFParams> brdfparams(m, "BRDFParams");
@@ -708,6 +729,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("optimize_distortion", &Testbed::Nerf::Training::optimize_distortion)
 		.def_readwrite("optimize_focal_length", &Testbed::Nerf::Training::optimize_focal_length)
 		.def_readwrite("n_steps_between_cam_updates", &Testbed::Nerf::Training::n_steps_between_cam_updates)
+		.def_readwrite("n_steps_between_error_map_updates", &Testbed::Nerf::Training::n_steps_between_error_map_updates)
 		.def_readwrite("sample_focal_plane_proportional_to_error", &Testbed::Nerf::Training::sample_focal_plane_proportional_to_error)
 		.def_readwrite("sample_image_proportional_to_error", &Testbed::Nerf::Training::sample_image_proportional_to_error)
 		.def_readwrite("include_sharpness_in_error", &Testbed::Nerf::Training::include_sharpness_in_error)
@@ -772,6 +794,17 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("use_ray_counter_per_image_in_ba", &Testbed::Nerf::Training::m_use_ray_counter_per_image_in_ba)
 		.def_readwrite("reset_ray_counters_and_gradients_for_ba", &Testbed::Nerf::Training::m_reset_ray_counters_and_gradients_for_ba)
 		.def_readwrite("min_num_rays_per_image_for_pose_update_in_ba", &Testbed::Nerf::Training::m_min_num_rays_per_image_for_pose_update)
+		.def_readwrite("truncation_distance_for_depth_guided_sampling", &Testbed::Nerf::Training::truncation_distance_for_depth_guided_sampling)
+		.def_readwrite("dt_for_depth_guided_sampling", &Testbed::Nerf::Training::dt_for_depth_guided_sampling)
+		.def_readwrite("num_samples_with_depth_guided_sampling", &Testbed::Nerf::Training::num_samples_with_depth_guided_sampling)
+		.def_readwrite("use_pose_scheduler_in_mapping", &Testbed::Nerf::Training::m_use_pose_scheduler_in_mapping)
+		.def_readwrite("pose_scheduler_coef", &Testbed::Nerf::Training::m_pose_scheduler_coef)
+		.def_readwrite("pose_scheduler_norm", &Testbed::Nerf::Training::m_pose_scheduler_norm)
+		.def_readwrite("extrinsic_learning_rate_ba_pos", &Testbed::Nerf::Training::extrinsic_learning_rate_ba_pos)
+		.def_readwrite("extrinsic_learning_rate_ba_rot", &Testbed::Nerf::Training::extrinsic_learning_rate_ba_rot)
+		.def_readwrite("n_samples_for_regular_sampling", &Testbed::Nerf::Training::n_samples_for_regular_sampling)
+		.def_readwrite("dt_for_regular_sampling", &Testbed::Nerf::Training::dt_for_regular_sampling)
+		.def_readwrite("use_gradient_clipping_for_extrinsics", &Testbed::Nerf::Training::m_use_gradient_clipping_for_extrinsics)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
