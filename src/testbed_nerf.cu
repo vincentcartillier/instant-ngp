@@ -4158,6 +4158,7 @@ __global__ void generate_training_samples_nerf_slam(
 	const float dt_for_depth_guided_sampling,
 	const bool use_custom_ray_marching,
 	const float dt_for_regular_sampling,
+	const uint32_t n_samples_for_regular_sampling,
 	float* __restrict__ xy_coords_sample, //DEBUG
 	uint32_t* __restrict__ img_id_sample,  //DEBUG
 	float* __restrict__ sample_z_vals //DEBUG
@@ -4223,7 +4224,14 @@ __global__ void generate_training_samples_nerf_slam(
 	vec3 ray_o = ray_unnormalized.o;
 	float cam_fwd_factor = dot(cam_fwd, ray_d_normalized);
 
-	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS()) {
+	uint32_t max_samples_per_ray;
+	if (use_custom_ray_marching) {
+		max_samples_per_ray = n_samples_for_regular_sampling;
+	} else {
+		max_samples_per_ray = NERF_STEPS(); 
+	}
+
+	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < max_samples_per_ray) {
 		float dt;
 		if (use_custom_ray_marching){
 			float cur_z = dot(cam_fwd, pos - ray_o);
@@ -4387,7 +4395,8 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	const bool add_free_space_loss,
 	const float free_space_supervision_lambda,
 	const float free_space_supervision_distance,
-	float* __restrict__ sample_outputs
+	float* __restrict__ sample_outputs, //DEBUG
+	const bool use_custom_ray_marching
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -4557,13 +4566,23 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	LossAndGradient lg = loss_and_gradient(rgbtarget, rgb_ray, loss_type);
 	lg.loss /= img_pdf * uv_pdf;
 
+	float ray_dir_norm = length(rays_in_unnormalized[i].d);
 	float target_depth = length(rays_in_unnormalized[i].d) * ((depth_supervision_lambda > 0.0f && metadata[img].depth) ? read_depth(uv, resolution, metadata[img].depth) : -1.0f);
-	LossAndGradient lg_depth = loss_and_gradient(vec3(target_depth), vec3(depth_ray), depth_loss_type);
+	LossAndGradient lg_depth;
+	if (use_custom_ray_marching) {
+		lg_depth = loss_and_gradient(vec3(target_depth / ray_dir_norm), vec3(depth_ray / ray_dir_norm), depth_loss_type);
+	} else {
+		lg_depth = loss_and_gradient(vec3(target_depth), vec3(depth_ray), depth_loss_type);
+	}
 	if (use_depth_variance_in_loss) {
         if (depth_var < 1e-6){
             depth_var = 1e-6;
         }
-		lg_depth = lg_depth / sqrt(depth_var);
+		float depth_std = sqrt(depth_var);
+		if (use_custom_ray_marching) {
+			depth_std /= ray_dir_norm;
+		}
+		lg_depth = lg_depth / depth_std;
 	}
 	float depth_loss_gradient = target_depth > 0.0f ? depth_supervision_lambda * lg_depth.gradient.x : 0;
 	float depth_loss_value    = target_depth > 0.0f ? depth_supervision_lambda * lg_depth.loss.x : 0;
@@ -4699,7 +4718,10 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 
 		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
 		const float depth_suffix = depth_ray - depth_ray2;
-		const float depth_supervision = depth_loss_gradient * (T * depth - depth_suffix);
+		float depth_supervision = depth_loss_gradient * (T * depth - depth_suffix);
+		if (use_custom_ray_marching) {
+			depth_supervision /= ray_dir_norm;
+		}
 
 		float dloss_by_dmlp = density_derivative * (
 			dt * ( loss_scale_rgb / 3.0 * dot(lg.gradient, T * rgb - suffix) + loss_scale_depth * depth_supervision)
@@ -5936,6 +5958,7 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 			m_nerf.training.dt_for_depth_guided_sampling,
 			m_use_custom_ray_marching,
 			m_nerf.training.dt_for_regular_sampling,
+			m_nerf.training.n_samples_for_regular_sampling,
 			m_debug ? xy_coords_sample.data(): nullptr,
 			m_debug ? img_id_sample.data(): nullptr,
 			m_debug ? sample_z_vals.data(): nullptr
@@ -6131,7 +6154,8 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		    	m_add_free_space_loss,
 		    	m_nerf.training.free_space_supervision_lambda,
 		    	m_nerf.training.free_space_supervision_distance,
-				m_debug ? sample_outputs.data(): nullptr
+				m_debug ? sample_outputs.data(): nullptr,
+				m_use_custom_ray_marching
 		    );
         }
 
@@ -6494,6 +6518,7 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 			m_nerf.training.dt_for_depth_guided_sampling,
 			m_use_custom_ray_marching,
 			m_nerf.training.dt_for_regular_sampling,
+			m_nerf.training.n_samples_for_regular_sampling,
 			nullptr,
 			nullptr,
 			nullptr
@@ -6638,7 +6663,8 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 		    	m_add_free_space_loss_tracking,
 				m_nerf.training.free_space_supervision_lambda,
 				m_nerf.training.free_space_supervision_distance,
-				nullptr
+				nullptr,
+				m_use_custom_ray_marching
 			);
 	}
 
