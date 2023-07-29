@@ -4396,7 +4396,8 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	const float free_space_supervision_lambda,
 	const float free_space_supervision_distance,
 	float* __restrict__ sample_outputs, //DEBUG
-	const bool use_custom_ray_marching
+	const bool use_custom_ray_marching,
+	float* __restrict__ rays_depth_variance
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -4503,6 +4504,10 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 			network_output += padded_output_width;
 			coords_in += 1;
 		}
+	}
+
+	if (rays_depth_variance) {
+		rays_depth_variance[i] = depth_var;
 	}
 
 	if (train_with_random_bg_color) {
@@ -5414,7 +5419,7 @@ __global__ void compute_cam_gradient_train_nerf_slam(
 		// The ray doesn't matter. So no gradient onto the camera
 		return;
 	}
-
+	
 	uint32_t base = numsteps_in[i*2+1];
 	coords += base;
 	coords_gradient += base;
@@ -6026,6 +6031,12 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		//DEBUG
 
 
+		
+		tcnn::GPUMemory<float> rays_depth_variance;
+		if (!m_use_sdf_in_nerf && m_nerf.training.use_depth_var_in_tracking_loss) {
+			rays_depth_variance.enlarge(counters.rays_per_batch);
+		}
+
 
         if (m_use_sdf_in_nerf) {
 		    linear_kernel(compute_loss_kernel_train_nerf_sdf_slam, 0, stream,
@@ -6155,7 +6166,8 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		    	m_nerf.training.free_space_supervision_lambda,
 		    	m_nerf.training.free_space_supervision_distance,
 				m_debug ? sample_outputs.data(): nullptr,
-				m_use_custom_ray_marching
+				m_use_custom_ray_marching,
+				((!m_use_sdf_in_nerf) && m_nerf.training.use_depth_var_in_tracking_loss) ? rays_depth_variance.data() : nullptr
 		    );
         }
 
@@ -6536,6 +6548,13 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 			hg_enc->set_max_level_gpu(m_max_level_rand_training ? max_level_compacted : nullptr);
 		}
 
+	
+		tcnn::GPUMemory<float> rays_depth_variance;
+		if (!m_use_sdf_in_nerf && m_nerf.training.use_depth_var_in_tracking_loss) {
+			rays_depth_variance.enlarge(counters.rays_per_batch);
+		}
+
+
         if (m_use_sdf_in_nerf) {
 			linear_kernel(compute_loss_kernel_train_nerf_sdf_slam, 0, stream,
 				counters.rays_per_batch,
@@ -6664,7 +6683,8 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 				m_nerf.training.free_space_supervision_lambda,
 				m_nerf.training.free_space_supervision_distance,
 				nullptr,
-				m_use_custom_ray_marching
+				m_use_custom_ray_marching,
+				((!m_use_sdf_in_nerf) && m_nerf.training.use_depth_var_in_tracking_loss) ? rays_depth_variance.data() : nullptr
 			);
 	}
 
