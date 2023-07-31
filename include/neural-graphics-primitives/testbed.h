@@ -722,6 +722,10 @@ public:
 			int view = 0;
 
 			float depth_supervision_lambda = 0.f;
+			float rgb_supervision_lambda = 1.f;
+
+			float depth_supervision_lambda_tracking = 0.f;
+			float rgb_supervision_lambda_tracking = 1.f;
 
 			tcnn::GPUMemory<float> sharpness_grid;
 
@@ -774,6 +778,10 @@ public:
 			float free_space_supervision_lambda = 0.0f;
 			float free_space_supervision_distance = 0.0f;
 			float truncation_distance = 0.05f;
+			
+			float DS_nerf_supervision_lambda = 0.0f;
+			float DS_nerf_supervision_depth_sigma = 1.0f;
+			float DS_nerf_supervision_lambda_tracking = 0.0f;
 
 			float sdf_supervision_lambda = 0.0f;
 
@@ -935,6 +943,8 @@ public:
 
 	bool m_add_free_space_loss = false;
 	bool m_add_sdf_loss = false;
+	bool m_add_DSnerf_loss = false;
+	bool m_add_DSnerf_loss_tracking = false;
 
 	bool m_add_free_space_loss_tracking = false;
 	bool m_add_sdf_loss_tracking = false;
