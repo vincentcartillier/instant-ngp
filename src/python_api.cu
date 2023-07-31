@@ -595,6 +595,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_property_readonly("loss_tracking", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar_tracking.val(); })
 		.def("track_steps", &Testbed::track_steps, py::call_guard<py::gil_scoped_release>(), "Perform SLAM tracking iterations.")
 		.def_readwrite("add_free_space_loss", &Testbed::m_add_free_space_loss)
+		.def_readwrite("add_DS_nerf_loss", &Testbed::m_add_DSnerf_loss)
+		.def_readwrite("add_DS_nerf_loss_tracking", &Testbed::m_add_DSnerf_loss_tracking)
 		.def_readwrite("add_sdf_loss", &Testbed::m_add_sdf_loss)
 		.def_readwrite("add_free_space_loss_tracking", &Testbed::m_add_free_space_loss_tracking)
 		.def_readwrite("add_sdf_loss_tracking", &Testbed::m_add_sdf_loss_tracking)
@@ -742,6 +744,9 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("intrinsic_l2_reg", &Testbed::Nerf::Training::intrinsic_l2_reg)
 		.def_readwrite("exposure_l2_reg", &Testbed::Nerf::Training::exposure_l2_reg)
 		.def_readwrite("depth_supervision_lambda", &Testbed::Nerf::Training::depth_supervision_lambda)
+		.def_readwrite("depth_supervision_lambda_tracking", &Testbed::Nerf::Training::depth_supervision_lambda_tracking)
+		.def_readwrite("rgb_supervision_lambda", &Testbed::Nerf::Training::rgb_supervision_lambda)
+		.def_readwrite("rgb_supervision_lambda_tracking", &Testbed::Nerf::Training::rgb_supervision_lambda_tracking)
 		.def_readonly("dataset", &Testbed::Nerf::Training::dataset)
 		.def("set_camera_intrinsics", &Testbed::Nerf::Training::set_camera_intrinsics,
 			py::arg("frame_idx"),
@@ -805,6 +810,9 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("n_samples_for_regular_sampling", &Testbed::Nerf::Training::n_samples_for_regular_sampling)
 		.def_readwrite("dt_for_regular_sampling", &Testbed::Nerf::Training::dt_for_regular_sampling)
 		.def_readwrite("use_gradient_clipping_for_extrinsics", &Testbed::Nerf::Training::m_use_gradient_clipping_for_extrinsics)
+		.def_readwrite("DS_nerf_supervision_lambda", &Testbed::Nerf::Training::DS_nerf_supervision_lambda)
+		.def_readwrite("DS_nerf_supervision_lambda_tracking", &Testbed::Nerf::Training::DS_nerf_supervision_lambda_tracking)
+		.def_readwrite("DS_nerf_supervision_depth_sigma", &Testbed::Nerf::Training::DS_nerf_supervision_depth_sigma)
 		;
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
