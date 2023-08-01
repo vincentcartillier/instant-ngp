@@ -146,6 +146,7 @@ enum class ENerfActivation : int {
 	ReLU,
 	Logistic,
 	Exponential,
+	Exponential10x,
 };
 static constexpr const char* NerfActivationStr = "None\0ReLU\0Logistic\0Exponential\0\0";
 

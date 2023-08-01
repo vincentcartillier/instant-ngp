@@ -216,6 +216,14 @@ int main(int argc, char** argv) {
     );
 
 
+    //DEBUG
+    // USE ScanNet dataset - scene0106
+    instant_ngp.clear_training_data();
+    instant_ngp.load_training_data("/srv/essa-lab/flash3/vcartillier3/nerf-slam/runs/ScanNet_scene0106/2/preprocessed_dataset/transforms.json");
+    float poses_scale = 1.67;
+    scale = 0.059;
+
+
     // train mapping on first image
     tlog::info()<<" Start Mapping";
     instant_ngp.m_nerf.training.n_images_for_training = 2;
@@ -223,13 +231,19 @@ int main(int argc, char** argv) {
     std::vector<uint32_t> idx_images_for_training_slam{0};
     instant_ngp.m_nerf.training.idx_images_for_mapping = idx_images_for_training_slam;
     
-    instant_ngp.m_use_sdf_in_nerf = true;
+	instant_ngp.m_use_depth_guided_sampling=false;
+    instant_ngp.m_use_sdf_in_nerf = false;
     instant_ngp.m_add_free_space_loss = true;
-    instant_ngp.m_add_sdf_loss = true;
-    instant_ngp.m_nerf.training.depth_supervision_lambda= 0.1;
-    instant_ngp.m_nerf.training.free_space_supervision_lambda= 10.0;
-    instant_ngp.m_nerf.training.sdf_supervision_lambda= 5000.0;
-    instant_ngp.m_nerf.training.truncation_distance = 0.05 * 2 * 0.33;
+    instant_ngp.m_add_sdf_loss = false;
+    instant_ngp.m_nerf.training.depth_supervision_lambda= 1.0;
+    instant_ngp.m_nerf.training.free_space_supervision_lambda= 1.0;
+    instant_ngp.m_nerf.training.free_space_supervision_distance= 0.1 * poses_scale * scale;
+    
+    //instant_ngp.m_nerf.training.sdf_supervision_lambda= 5000.0;
+    instant_ngp.m_nerf.training.truncation_distance = 0.05 * poses_scale * scale;
+
+	instant_ngp.m_nerf.training.truncation_distance_for_depth_guided_sampling = 0.1 * poses_scale * scale;
+	instant_ngp.m_nerf.training.dt_for_depth_guided_sampling = 0.01 * poses_scale * scale;
 
     instant_ngp.m_nerf.training.depth_loss_type = ELossType::L2;
     instant_ngp.m_nerf.density_activation = ENerfActivation::None;

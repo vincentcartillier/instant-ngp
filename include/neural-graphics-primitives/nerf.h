@@ -43,6 +43,13 @@ struct NerfPayload {
     bool found_surface;
     float prev_sdf;
     float norm_weights;
+
+	//for debug
+	// -- std::vector<float> sample_z;
+	// -- std::vector<float> densities;
+	// -- std::vector<float> dz;
+	// -- std::vector<float> alpha;
+	// -- std::vector<float> T;
 };
 
 struct RaysNerfSoa {

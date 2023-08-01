@@ -336,6 +336,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("ReLU", ENerfActivation::ReLU)
 		.value("Logistic", ENerfActivation::Logistic)
 		.value("Exponential", ENerfActivation::Exponential)
+		.value("Exponential10x", ENerfActivation::Exponential10x)
 		.export_values();
 
 	py::enum_<EMeshSdfMode>(m, "MeshSdfMode")
