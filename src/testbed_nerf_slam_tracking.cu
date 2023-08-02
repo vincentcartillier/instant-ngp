@@ -138,7 +138,7 @@ void Testbed::sample_pixels_for_tracking_with_gaussian_pyramid(
 
     uint32_t cpt=0;
     std::unordered_map<uint32_t, uint32_t> tmp_dict;
-    while ( (ray_counter + ray_stride) < max_rays_per_batch) {
+    while ( (ray_counter + ray_stride) <= max_rays_per_batch) {
 
         ++super_ray_counter;
 
@@ -184,7 +184,8 @@ void Testbed::sample_pixels_for_tracking_with_gaussian_pyramid(
 
                 // check if ray exists
                 key = tmp_xy_int.x + tmp_xy_int.y * resolution.x;
-                if (tmp_dict.count(key) == 0) {
+                //if (tmp_dict.count(key) == 0) {
+                if (true) {
                     ray_mapping.push_back(cpt);
                     tmp_dict[key] = cpt;
                     ++ray_counter_for_gradient;

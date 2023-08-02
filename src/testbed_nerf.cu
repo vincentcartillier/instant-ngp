@@ -5935,12 +5935,15 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 	uint32_t* ray_counter = std::get<10>(scratch);
 	uint32_t* ray_counter_depth = std::get<11>(scratch);
 
-	uint32_t max_inference;
+	uint32_t max_inference=max_samples;
 	if (counters.measured_batch_size_before_compaction == 0) {
-		counters.measured_batch_size_before_compaction = max_inference = max_samples;
-	} else {
-		max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
+		counters.measured_batch_size_before_compaction = max_inference;
 	}
+	//if (counters.measured_batch_size_before_compaction == 0) {
+	//	counters.measured_batch_size_before_compaction = max_inference = max_samples;
+	//} else {
+	//	max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
+	//}
 
 	GPUMatrix<float> compacted_coords_matrix((float*)coords_compacted, floats_per_coord, target_batch_size);
 	GPUMatrix<network_precision_t> compacted_rgbsigma_matrix(mlp_out, padded_output_width, target_batch_size);
@@ -6519,12 +6522,15 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 	uint32_t* ray_counter = std::get<10>(scratch);
 	uint32_t* ray_counter_depth = std::get<11>(scratch);
 
-	uint32_t max_inference;
+	uint32_t max_inference=max_samples;
 	if (counters.measured_batch_size_before_compaction == 0) {
-		counters.measured_batch_size_before_compaction = max_inference = max_samples;
-	} else {
-		max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
+		counters.measured_batch_size_before_compaction = max_inference;
 	}
+	//if (counters.measured_batch_size_before_compaction == 0) {
+	//	counters.measured_batch_size_before_compaction = max_inference = max_samples;
+	//} else {
+	//	max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
+	//}
 
 	GPUMatrix<float> compacted_coords_matrix((float*)coords_compacted, floats_per_coord, target_batch_size);
 	GPUMatrix<network_precision_t> compacted_rgbsigma_matrix(mlp_out, padded_output_width, target_batch_size);
@@ -6599,6 +6605,20 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 			nullptr,
 			nullptr
 		);
+
+
+		//DEBUG
+		//DEBUG
+		uint32_t m_track_pose_nerf_num_rays_in_tracking_step = 0;
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpyAsync(&m_track_pose_nerf_num_rays_in_tracking_step,std::get<10>(scratch),sizeof(uint32_t),cudaMemcpyDeviceToHost,stream)
+ 	   	);
+		m_ray_counter = m_track_pose_nerf_num_rays_in_tracking_step;
+		m_rays_per_batch = counters.rays_per_batch;
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpyAsync(&m_ray_counter_depth,std::get<11>(scratch),sizeof(uint32_t),cudaMemcpyDeviceToHost,stream)
+ 	   	);
+
 
 		if (hg_enc) {
 			hg_enc->set_max_level_gpu(m_max_level_rand_training ? max_level : nullptr);
@@ -7886,8 +7906,11 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
     uint32_t* existing_ray_mapping_gpu = std::get<16>(scratch);
 	float* super_ray_gradients = std::get<17>(scratch);
 
-	uint32_t max_inference = next_multiple(std::min(n_total_rays_for_gradient * 1024, max_samples), tcnn::batch_size_granularity);
-    counters.measured_batch_size_before_compaction = max_inference;
+	//uint32_t max_inference = next_multiple(std::min(n_total_rays_for_gradient * 1024, max_samples), tcnn::batch_size_granularity);
+	uint32_t max_inference=max_samples;
+	if (counters.measured_batch_size_before_compaction == 0) {
+		counters.measured_batch_size_before_compaction = max_inference;
+	}
 
 	GPUMatrix<float> coords_matrix((float*)coords, floats_per_coord, max_inference);
 	GPUMatrix<network_precision_t> rgbsigma_matrix(mlp_out, padded_output_width, max_inference);

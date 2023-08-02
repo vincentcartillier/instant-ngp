@@ -857,6 +857,7 @@ PYBIND11_MODULE(pyngp, m) {
 	py::class_<Testbed::NerfCounters>(training, "NerfCounters")
 		.def_readonly("rays_per_batch", &Testbed::NerfCounters::rays_per_batch)
 		.def_readonly("measured_batch_size", &Testbed::NerfCounters::measured_batch_size)
+		.def_readonly("measured_batch_size_before_compaction", &Testbed::NerfCounters::measured_batch_size_before_compaction)
 		;
 
 
