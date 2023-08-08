@@ -1002,6 +1002,8 @@ public:
 
 	// get the coords samples for each ray
 	std::vector<float> m_coords_cpu;
+	std::vector<float> m_coords_compacted_filled_cpu;
+	std::vector<float> m_coords_gradient_cpu;
 	std::vector<float> m_sample_z_vals_cpu;
 	std::vector<float> m_sample_outputs_cpu;
 	std::vector<uint32_t> m_numsteps_cpu;

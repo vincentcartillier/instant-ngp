@@ -5468,7 +5468,8 @@ __global__ void compute_cam_gradient_train_nerf_slam(
 	const float* __restrict__ cdf_img,
 	const ivec2 error_map_res,
 	const uint32_t* __restrict__ idx_images_for_mapping,
-	const ivec2 sample_away_from_border_margin
+	const ivec2 sample_away_from_border_margin,
+	const bool is_dir_encoding_empty
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -5517,6 +5518,10 @@ __global__ void compute_cam_gradient_train_nerf_slam(
 		// changes more rapidly as the direction changes.
 		float t = distance(pos, ray.o);
 		vec3 dir_gradient = coords_gradient(j)->dir.d * warp_direction_derivative(coords(j)->dir.d);
+
+		if (is_dir_encoding_empty) {
+			dir_gradient = {0.,0.,0.};
+		}
 
 		// in case gradient are nan at this point
         if ( std::isnan(dir_gradient.x) or std::isnan(dir_gradient.y) or std::isnan(dir_gradient.z)
@@ -6252,7 +6257,6 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 	//DEBUG
 
 
-
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
 		target_batch_size, padded_output_width, counters.numsteps_counter_compacted.data(), dloss_dmlp_out
 	);
@@ -6263,6 +6267,14 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		target_batch_size, 1, counters.numsteps_counter_compacted.data(), max_level_compacted
 	);
 
+	if (m_debug) {
+		m_coords_compacted_filled_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_compacted_filled_cpu.data(),std::get<7>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+	
+
 	bool train_camera = m_nerf.training.optimize_extrinsics || m_nerf.training.optimize_distortion || m_nerf.training.optimize_focal_length;
 	bool train_extra_dims = m_nerf.training.dataset.n_extra_learnable_dims > 0 && m_nerf.training.optimize_extra_dims;
 	bool prepare_input_gradients = train_camera || train_extra_dims;
@@ -6272,6 +6284,15 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, prepare_input_gradients);
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
+
+
+	if (m_debug) {
+		m_coords_gradient_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_gradient_cpu.data(),std::get<8>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+	
 
 	if (train_extra_dims) {
 		// Compute extra-dim gradients
@@ -6289,6 +6310,9 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 			m_nerf.training.idx_images_for_mapping_gpu.data()
 		);
 	}
+
+	std::string dir_encoding = m_network_config["dir_encoding"].value("otype", "none");
+	bool is_dir_encoding_empty = dir_encoding == "Empty";
 
 	if (train_camera) {
 		// Compute camera gradients
@@ -6318,7 +6342,8 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 			sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
 			m_nerf.training.error_map.cdf_resolution,
 			m_nerf.training.idx_images_for_mapping_gpu.data(),
-			sample_away_from_border_margin
+			sample_away_from_border_margin,
+			is_dir_encoding_empty
 		);
 	}
 
@@ -6775,6 +6800,13 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 		    	m_nerf.training.DS_nerf_supervision_depth_sigma
 			);
 	}
+	
+	if (m_debug) {
+		m_numsteps_compacted_cpu.resize(counters.rays_per_batch * 2);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_numsteps_compacted_cpu.data(),std::get<2>(scratch), counters.rays_per_batch * 2 * sizeof(uint32_t),cudaMemcpyDeviceToHost)
+ 	   );
+	}
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
 		target_batch_size, padded_output_width, counters.numsteps_counter_compacted.data(), dloss_dmlp_out
@@ -6786,6 +6818,13 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 		target_batch_size, 1, counters.numsteps_counter_compacted.data(), max_level_compacted
 	);
 
+	if (m_debug) {
+		m_coords_compacted_filled_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_compacted_filled_cpu.data(),std::get<7>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+
 	bool train_camera = true;
 	bool prepare_input_gradients = train_camera;
 	GPUMatrix<float> coords_gradient_matrix((float*)coords_gradient, floats_per_coord, target_batch_size);
@@ -6794,6 +6833,17 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 		auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, prepare_input_gradients);
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
+
+
+	if (m_debug) {
+		m_coords_gradient_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_gradient_cpu.data(),std::get<8>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+
+	std::string dir_encoding = m_network_config["dir_encoding"].value("otype", "none");
+	bool is_dir_encoding_empty = dir_encoding == "Empty";
 
 	if (train_camera) {
 		// Compute camera gradients
@@ -6823,7 +6873,8 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 			sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
 			m_nerf.training.error_map.cdf_resolution,
 			indice_image_for_tracking_pose_gpu.data(),
-			sample_away_from_border_margin
+			sample_away_from_border_margin,
+			is_dir_encoding_empty
 		);
 	}
 
@@ -7684,7 +7735,8 @@ __global__ void compute_cam_gradient_train_nerf_slam_gp(
 	const uint32_t indice_image_for_tracking_pose,
     const uint32_t* __restrict__ image_ids,
     const float* __restrict__ xy_image_pixel_indices,
-	uint32_t* num_rays_per_image_counter
+	uint32_t* num_rays_per_image_counter,
+	const bool is_dir_encoding_empty
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -7727,14 +7779,32 @@ __global__ void compute_cam_gradient_train_nerf_slam_gp(
 	// Compute ray gradient
 	for (uint32_t j = 0; j < numsteps; ++j) {
 		const vec3 warped_pos = coords(j)->pos.p;
-		const vec3 pos_gradient = coords_gradient(j)->pos.p * warp_position_derivative(warped_pos, aabb);
+		vec3 pos_gradient = coords_gradient(j)->pos.p * warp_position_derivative(warped_pos, aabb);
+		// in case gradient are nan at this point
+        if ( std::isnan(pos_gradient.x) or std::isnan(pos_gradient.y) or std::isnan(pos_gradient.z)
+          or std::isinf(pos_gradient.x) or std::isinf(pos_gradient.y) or std::isinf(pos_gradient.z) ) {
+                pos_gradient.x = 0.f;
+                pos_gradient.y = 0.f;
+                pos_gradient.z = 0.f;
+        }
 		ray_gradient.o += pos_gradient;
 		const vec3 pos = unwarp_position(warped_pos, aabb);
 
 		// Scaled by t to account for the fact that further-away objects' position
 		// changes more rapidly as the direction changes.
 		float t = distance(pos, ray.o);
-		const vec3 dir_gradient = coords_gradient(j)->dir.d * warp_direction_derivative(coords(j)->dir.d);
+		vec3 dir_gradient = coords_gradient(j)->dir.d * warp_direction_derivative(coords(j)->dir.d);
+		if (is_dir_encoding_empty) {
+			dir_gradient = {0.,0.,0.};
+		}
+
+		// in case gradient are nan at this point
+        if ( std::isnan(dir_gradient.x) or std::isnan(dir_gradient.y) or std::isnan(dir_gradient.z)
+          or std::isinf(dir_gradient.x) or std::isinf(dir_gradient.y) or std::isinf(dir_gradient.z) ) {
+                dir_gradient.x = 0.f;
+                dir_gradient.y = 0.f;
+                dir_gradient.z = 0.f;
+        }
 		ray_gradient.d += pos_gradient * t + dir_gradient;
 	}
 
@@ -8300,6 +8370,13 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		target_batch_size, 1, counters.numsteps_counter_compacted.data(), max_level_compacted
 	);
 
+	if (m_debug) {
+		m_coords_compacted_filled_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_compacted_filled_cpu.data(),std::get<7>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+
 	bool train_camera = true;
 	bool prepare_input_gradients = train_camera;
 	GPUMatrix<float> coords_gradient_matrix((float*)coords_gradient, floats_per_coord, target_batch_size);
@@ -8308,6 +8385,16 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, prepare_input_gradients);
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
+
+	if (m_debug) {
+		m_coords_gradient_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_gradient_cpu.data(),std::get<8>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+
+	std::string dir_encoding = m_network_config["dir_encoding"].value("otype", "none");
+	bool is_dir_encoding_empty = dir_encoding == "Empty";
 
 	if (train_camera) {
 		// Compute camera gradients
@@ -8330,7 +8417,8 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
        		m_nerf.training.indice_image_for_tracking_pose,
 			nullptr,
        		xy_image_pixel_indices,
-			nullptr
+			nullptr,
+			is_dir_encoding_empty
 		);
 	}
 
@@ -9125,6 +9213,9 @@ void Testbed::train_nerf_slam_tracking_step_mgl_coarse_to_fine(uint32_t target_b
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
 
+	std::string dir_encoding = m_network_config["dir_encoding"].value("otype", "none");
+	bool is_dir_encoding_empty = dir_encoding == "Empty";
+
 	if (train_camera) {
 		// Compute camera gradients
 		linear_kernel(compute_cam_gradient_train_nerf_slam, 0, stream,
@@ -9153,7 +9244,8 @@ void Testbed::train_nerf_slam_tracking_step_mgl_coarse_to_fine(uint32_t target_b
 			sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
 			m_nerf.training.error_map.cdf_resolution,
 			indice_image_for_tracking_pose_gpu.data(),
-			sample_away_from_border_margin
+			sample_away_from_border_margin,
+			is_dir_encoding_empty
 		);
 	}
 
@@ -9211,6 +9303,9 @@ __global__ void mark_unvisible_density_grid_slam(const uint32_t n_elements,  uin
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
+	//That voxel has already been observed (in slam mode observed voxels cannot become unobserved)
+	if (grid_out[i]==0)	return;
+
 	uint32_t level = i / NERF_GRID_N_CELLS();
 	uint32_t pos_idx = i % NERF_GRID_N_CELLS();
 
@@ -9267,6 +9362,18 @@ __global__ void mark_unvisible_density_grid_slam(const uint32_t n_elements,  uin
 			if (distance(normalize(ray.d), dir) < 1e-3f && uv.x > 0.0f && uv.y > 0.0f && uv.x < 1.0f && uv.y < 1.0f) {
 				++count;
 				break;
+				
+				// // -- - //Check if voxel corner is in front of closest surface - Anything behind depth shouldn't be carved out by the system 
+				// // -- - // e.g. in slam it is possible that another room is behind doors and walls. We need to be able to sample points from the space behind to allow proper tracking and mapping
+				// // -- - float target_z = m.depth ? read_depth(uv, m.resolution, m.depth) : -1.0f;
+
+				// // -- - if (target_z > 0) {
+				// // -- - 	float cur_z = dot( (corners[k] - xform[3]), xform[2]);
+				// // -- - 	if (cur_z < (target_z+1e-4)){
+				// // -- - 		++count;
+				// // -- - 		break;
+				// // -- - 	}
+				// // -- - }
 			}
 		}
 	}
@@ -9516,14 +9623,17 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 	float* density_grid_tmp = std::get<2>(scratch);
 	network_precision_t* mlp_out = std::get<3>(scratch);
 
-    std::sort(m_nerf.training.idx_images_for_mapping.begin(), m_nerf.training.idx_images_for_mapping.end());
-    std::sort(m_nerf.training.idx_images_for_mapping_prev.begin(), m_nerf.training.idx_images_for_mapping_prev.end());
+    std::sort(m_nerf.training.idx_images_for_mapping.begin(), m_nerf.training.idx_images_for_mapping.end(), std::greater<>());
+    std::sort(m_nerf.training.idx_images_for_mapping_prev.begin(), m_nerf.training.idx_images_for_mapping_prev.end(), std::greater<>());
 
 	//DEBUG
 	//DEBUG
 	 if (m_training_step == 0) {
 	 	CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
 		m_nerf.density_grid_ema_step = 0;
+	    
+		m_nerf.density_grid_unvisible_regions_bool.enlarge(n_elements);
+	 	CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_unvisible_regions_bool.data(), 1, sizeof(uint8_t)*n_elements, stream));
 	 }
 	//DEBUG
 	//DEBUG
@@ -9561,11 +9671,11 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 	// detect unvisible regions
 	//NOTE: send mapping image indices to device
 	if (m_training_step == 0 || m_nerf.training.idx_images_for_mapping != m_nerf.training.idx_images_for_mapping_prev) {
+		m_nerf.training.idx_images_for_mapping_prev = m_nerf.training.idx_images_for_mapping;
 	    m_nerf.training.idx_images_for_mapping_gpu.enlarge(m_nerf.training.idx_images_for_mapping.size());
 	    CUDA_CHECK_THROW(
            cudaMemcpy( m_nerf.training.idx_images_for_mapping_gpu.data(), m_nerf.training.idx_images_for_mapping.data(), m_nerf.training.idx_images_for_mapping.size() * sizeof(uint32_t), cudaMemcpyHostToDevice)
         );
-	    m_nerf.density_grid_unvisible_regions_bool.enlarge(n_elements);
 	    linear_kernel(mark_unvisible_density_grid_slam, 0, stream, n_elements, m_nerf.density_grid_unvisible_regions_bool.data(),
 	    	m_nerf.training.idx_images_for_mapping.size(),
 	    	m_nerf.training.idx_images_for_mapping_gpu.data(),
@@ -10169,12 +10279,19 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 	//uint32_t max_inference = next_multiple(std::min(n_total_rays_for_gradient * 1024, max_samples), tcnn::batch_size_granularity);
     //counters.measured_batch_size_before_compaction = max_inference;
 
-	uint32_t max_inference;
+	//uint32_t max_inference;
+	//if (counters.measured_batch_size_before_compaction == 0) {
+	//	counters.measured_batch_size_before_compaction = max_inference = max_samples;
+	//} else {
+	//	max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
+	//}
+	
+	uint32_t max_inference=max_samples;
 	if (counters.measured_batch_size_before_compaction == 0) {
-		counters.measured_batch_size_before_compaction = max_inference = max_samples;
-	} else {
-		max_inference = next_multiple(std::min(counters.measured_batch_size_before_compaction, max_samples), tcnn::batch_size_granularity);
+		counters.measured_batch_size_before_compaction = max_inference;
 	}
+
+
 
 
 
@@ -10229,6 +10346,15 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
        cudaMemcpy(std::get<18>(scratch),image_ids.data(),n_total_rays * sizeof(uint32_t),cudaMemcpyHostToDevice)
     );
 
+	//DEBUG
+	//DEBUG
+	tcnn::GPUMemory<float> sample_z_vals;
+	if (m_debug) {
+		sample_z_vals.enlarge(max_samples);
+	}
+	//DEBUG
+	//DEBUG
+
     //NOTE: get sample along each rays
 	linear_kernel(generate_training_samples_for_tracking_gp, 0, stream,
 		n_total_rays,
@@ -10254,7 +10380,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		mapping_indices,
        	existing_ray_mapping_gpu,
        	xy_image_pixel_indices,
-		nullptr,
+		m_debug ? sample_z_vals.data(): nullptr,
 		m_use_custom_ray_marching,
 		m_use_depth_guided_sampling,
 		m_nerf.training.dt_for_regular_sampling,
@@ -10271,6 +10397,23 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 	//DEBUG
 	//DEBUG
 	m_ray_counter = m_track_pose_nerf_num_rays_in_tracking_step;
+	//DEBUG
+	//DEBUG
+	// -- get sample coordinates for each ray
+	if (m_debug) {
+		m_coords_cpu.resize(max_samples * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_cpu.data(),std::get<3>(scratch), max_samples * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+		m_numsteps_cpu.resize(n_total_rays_for_gradient * 2);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_numsteps_cpu.data(),std::get<2>(scratch), n_total_rays_for_gradient * 2 * sizeof(uint32_t),cudaMemcpyDeviceToHost)
+ 	   );
+		m_sample_z_vals_cpu.resize(max_samples);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_sample_z_vals_cpu.data(),sample_z_vals.data(), max_samples * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
 	//DEBUG
 	//DEBUG
 
@@ -10495,6 +10638,13 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		target_batch_size, 1, counters.numsteps_counter_compacted.data(), max_level_compacted
 	);
 
+	if (m_debug) {
+		m_coords_compacted_filled_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_compacted_filled_cpu.data(),std::get<7>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+
 	bool train_camera = true;
 	bool prepare_input_gradients = train_camera;
 	GPUMatrix<float> coords_gradient_matrix((float*)coords_gradient, floats_per_coord, target_batch_size);
@@ -10503,6 +10653,16 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, prepare_input_gradients);
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
+
+	if (m_debug) {
+		m_coords_gradient_cpu.resize(target_batch_size * floats_per_coord);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(m_coords_gradient_cpu.data(),std::get<8>(scratch), target_batch_size * floats_per_coord * sizeof(float),cudaMemcpyDeviceToHost)
+ 	   );
+	}
+
+	std::string dir_encoding = m_network_config["dir_encoding"].value("otype", "none");
+	bool is_dir_encoding_empty = dir_encoding == "Empty";
 
 	if (train_camera) {
 		// Compute camera gradients
@@ -10525,7 +10685,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
        		m_nerf.training.indice_image_for_tracking_pose,
 			image_ids_gpu,
        		xy_image_pixel_indices,
-			m_nerf.training.m_use_ray_counter_per_image_in_ba ? m_nerf.training.m_num_rays_per_image_gpu.data(): nullptr
+			m_nerf.training.m_use_ray_counter_per_image_in_ba ? m_nerf.training.m_num_rays_per_image_gpu.data(): nullptr,
+			is_dir_encoding_empty
 		);
 	}
 
@@ -10768,6 +10929,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
 
+	std::string dir_encoding = m_network_config["dir_encoding"].value("otype", "none");
+	bool is_dir_encoding_empty = dir_encoding == "Empty";
 
 	if (train_camera) {
 		// Compute camera gradients
@@ -10797,7 +10960,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t
 			sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
 			m_nerf.training.error_map.cdf_resolution,
     		m_nerf.training.idx_images_for_mapping_gpu.data(),
-			sample_away_from_border_margin
+			sample_away_from_border_margin,
+			is_dir_encoding_empty
 		);
 	}
 

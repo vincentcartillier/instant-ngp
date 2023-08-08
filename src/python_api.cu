@@ -631,6 +631,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("pos_gradient", &Testbed::m_pos_gradient)
 		.def_readonly("rot_gradient", &Testbed::m_rot_gradient)
 		.def_readonly("coords", &Testbed::m_coords_cpu)
+		.def_readonly("coords_compacted_filled", &Testbed::m_coords_compacted_filled_cpu)
+		.def_readonly("coords_gradient", &Testbed::m_coords_gradient_cpu)
 		.def_readonly("sample_z_vals", &Testbed::m_sample_z_vals_cpu)
 		.def_readonly("sample_outputs", &Testbed::m_sample_outputs_cpu)
 		.def_readonly("numsteps", &Testbed::m_numsteps_cpu)
