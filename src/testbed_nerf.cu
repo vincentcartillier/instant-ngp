@@ -62,7 +62,7 @@ inline constexpr __device__ uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY() { return 16;
 
 // Any alpha below this is considered "invisible" and is thus culled away.
 inline constexpr __device__ float NERF_MIN_OPTICAL_THICKNESS() { return 0.01f; }
-//inline constexpr __device__ float NERF_MIN_OPTICAL_THICKNESS() { return 0.0001f; }
+//inline constexpr __device__ float NERF_MIN_OPTICAL_THICKNESS() { return 0.001f; }
 
 static constexpr uint32_t MARCH_ITER = 10000;
 
@@ -4671,7 +4671,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 				n_steps_for_ds_nerf_loss = tmp_j;
 				network_output -= padded_output_width * tmp_j; // rewind the pointer
 				coords_in -= tmp_j;
-				ds_nerf_loss /= (float)tmp_j;
+				//ds_nerf_loss /= (float)tmp_j;
 			}
 		}
 	}
@@ -4680,9 +4680,12 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	uint32_t total_rays = *rays_counter;
 	uint32_t total_rays_depth = *rays_counter_depth;
 
+
 	float rgb_loss = compAdd(lg.loss) / 3.0f;
 	float depth_loss = depth_loss_value + free_space_supervision_lambda*free_space_loss + DS_nerf_supervision_lambda*ds_nerf_loss;
 	float mean_loss = rgb_loss;
+	
+	//printf(" %f, %f, %f | ", rgb_loss, depth_loss_value, ds_nerf_loss);
 
 	if (loss_output) {
 		loss_output[i] = rgb_loss / (float)total_rays + depth_loss / (float)total_rays_depth;
@@ -4801,7 +4804,8 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 						float tmp_dt = unwarp_dt(tmp_coord_in->dt);
 						tmp_ds_grad += dt * tmp_dt * __expf(-((tmp_depth-target_depth)*(tmp_depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
 					}
-					dloss_by_dmlp += loss_scale_depth * density_derivative * DS_nerf_supervision_lambda * tmp_ds_grad / (float)n_steps_for_ds_nerf_loss;
+					//dloss_by_dmlp += loss_scale_depth * density_derivative * DS_nerf_supervision_lambda * tmp_ds_grad / (float)n_steps_for_ds_nerf_loss;
+					dloss_by_dmlp += loss_scale_depth * density_derivative * DS_nerf_supervision_lambda * tmp_ds_grad;
 				}
 			}
 		}
@@ -9484,14 +9488,19 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 	float* density_grid_tmp = std::get<2>(scratch);
 	network_precision_t* mlp_out = std::get<3>(scratch);
 
-    std::sort(m_nerf.training.idx_images_for_mapping.begin(), m_nerf.training.idx_images_for_mapping.end());
-    std::sort(m_nerf.training.idx_images_for_mapping_prev.begin(), m_nerf.training.idx_images_for_mapping_prev.end());
+    std::sort(m_nerf.training.idx_images_for_mapping.begin(), m_nerf.training.idx_images_for_mapping.end(), std::greater<>());
+    std::sort(m_nerf.training.idx_images_for_mapping_prev.begin(), m_nerf.training.idx_images_for_mapping_prev.end(), std::greater<>());
 
 
 	//DEBUG
 	//DEBUG
 	if (m_training_step == 0) {
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
+		m_nerf.density_grid_ema_step = 0;
+	    
+		m_nerf.density_grid_unvisible_regions_bool.enlarge(n_elements);
+	 	CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_unvisible_regions_bool.data(), 1, sizeof(uint8_t)*n_elements, stream));
+
 	}
 	//DEBUG
 	//DEBUG
@@ -9523,6 +9532,31 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 		}
 	}
 	*/
+
+
+	//DEBUG
+	//DEBUG
+	//DEBUG
+	// detect unvisible regions
+	//NOTE: send mapping image indices to device
+	if (m_training_step == 0 || m_nerf.training.idx_images_for_mapping != m_nerf.training.idx_images_for_mapping_prev) {
+		m_nerf.training.idx_images_for_mapping_prev = m_nerf.training.idx_images_for_mapping;
+	    m_nerf.training.idx_images_for_mapping_gpu.enlarge(m_nerf.training.idx_images_for_mapping.size());
+	    CUDA_CHECK_THROW(
+           cudaMemcpy( m_nerf.training.idx_images_for_mapping_gpu.data(), m_nerf.training.idx_images_for_mapping.data(), m_nerf.training.idx_images_for_mapping.size() * sizeof(uint32_t), cudaMemcpyHostToDevice)
+        );
+	    linear_kernel(mark_unvisible_density_grid_slam, 0, stream, n_elements, m_nerf.density_grid_unvisible_regions_bool.data(),
+	    	m_nerf.training.idx_images_for_mapping.size(),
+	    	m_nerf.training.idx_images_for_mapping_gpu.data(),
+	    	m_nerf.training.dataset.metadata_gpu.data(),
+	    	m_nerf.training.transforms_gpu.data()
+	    );
+    }
+	//DEBUG
+	//DEBUG
+	//DEBUG
+
+
 
 	uint32_t n_steps = 1;
 	for (uint32_t i = 0; i < n_steps; ++i) {
@@ -9572,7 +9606,12 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 		++m_nerf.density_grid_ema_step;
 	}
 
-	update_density_grid_mean_and_bitfield(stream);
+	//DEBUG
+	//DEBUG
+	//update_density_grid_mean_and_bitfield(stream);
+	update_density_grid_mean_and_bitfield_slam(stream);
+	//DEBUG
+	//DEBUG
 }
 
 void Testbed::density_grid_culling_using_keyframes() {
