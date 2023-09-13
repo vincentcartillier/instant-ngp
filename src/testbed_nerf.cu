@@ -142,6 +142,25 @@ inline __host__ __device__ float calc_dt(float t, float cone_angle) {
 	return advance_n_steps(t, cone_angle, 1.0f) - t;
 }
 
+inline __host__ __device__ float calc_dt_with_depth_guided_sampling(
+	float t, 
+	float cone_angle,
+	const float depth, 
+	const float target_depth, 
+	const float dt_for_depth_guided_sampling, 
+	const float truncation_distance_for_depth_guided_sampling
+) {
+	float dt;
+	if ((depth >= (target_depth - truncation_distance_for_depth_guided_sampling)) &
+		(depth <  (target_depth + truncation_distance_for_depth_guided_sampling)) &
+		(target_depth > 0.)){
+		dt = dt_for_depth_guided_sampling;
+	} else {
+		dt = calc_dt(t, cone_angle);
+	}
+	return dt;
+}
+
 inline __host__ __device__ float calc_dt_slaim(
 	const float cur_z, 
 	const float target_z, 
@@ -4194,7 +4213,7 @@ __global__ void generate_training_samples_nerf_slam(
 	const mat4x3 xform = get_xform_given_rolling_shutter(training_xforms[img], metadata[img].rolling_shutter, uv, motionblur_time);
 	vec3 cam_fwd = xform[2];
 
-	float target_z = metadata[img].depth ? read_depth(uv, resolution, metadata[img].depth) : -1.0;
+	float target_z = metadata[img].depth  ? read_depth(uv, resolution, metadata[img].depth) : -1.0;
 
 	Ray ray_unnormalized;
 	const Ray* rays_in_unnormalized = metadata[img].rays;
@@ -4207,6 +4226,8 @@ __global__ void generate_training_samples_nerf_slam(
 			ray_unnormalized = {xform[3], xform[2]};
 		}
 	}
+
+	float target_depth = length(ray_unnormalized.d) * target_z;
 
 	vec3 ray_d_normalized = normalize(ray_unnormalized.d);
 
@@ -4235,7 +4256,7 @@ __global__ void generate_training_samples_nerf_slam(
 
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < max_samples_per_ray) {
 		float dt;
-		if (use_custom_ray_marching){
+		if (use_custom_ray_marching){ //ie sampling on planes VS spheres
 			float cur_z = dot(cam_fwd, pos - ray_o);
 			//TODO add perturb
 			dt = calc_dt_slaim(
@@ -4244,7 +4265,16 @@ __global__ void generate_training_samples_nerf_slam(
 				cam_fwd_factor, use_depth_guided_sampling
 			);
 		} else {
-			dt = calc_dt(t, cone_angle);
+			if (use_depth_guided_sampling) {
+				float cur_depth = distance(pos, ray_o);
+				dt = calc_dt_with_depth_guided_sampling(
+					t, cone_angle,
+					cur_depth, target_depth,
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+				);
+			} else {
+				dt = calc_dt(t, cone_angle);
+			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid) {
@@ -4275,7 +4305,6 @@ __global__ void generate_training_samples_nerf_slam(
 	uint32_t ray_idx = atomicAdd(ray_counter, 1);
 
 	// get depth_ray_counters
-	float target_depth = metadata[img].depth ? read_depth(uv, resolution, metadata[img].depth) : -1.0f;
 	if (target_depth > 0.) {
 		uint32_t ray_idx_depth = atomicAdd(ray_counter_depth, 1);
 	}
@@ -4303,7 +4332,16 @@ __global__ void generate_training_samples_nerf_slam(
 				cam_fwd_factor, use_depth_guided_sampling
 			);
 		} else {
-			dt = calc_dt(t, cone_angle);
+			if (use_depth_guided_sampling) {
+				float cur_depth = distance(pos, ray_o);
+				dt = calc_dt_with_depth_guided_sampling(
+					t, cone_angle,
+					cur_depth, target_depth,
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+				);
+			} else {
+				dt = calc_dt(t, cone_angle);
+			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid){
@@ -4437,6 +4475,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	vec3 cam_fwd = xform[2];
 
 	float target_z = metadata[img].depth ? read_depth(uv, resolution, metadata[img].depth) : -1.0f;
+	float target_d = length(rays_in_unnormalized[i].d) * target_z;
 
 	float T = 1.f;
 
@@ -4459,17 +4498,19 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 
 		float density = network_to_density(float(local_network_output[3]), density_activation);
 
-		//if (!add_DSnerf_loss) {
-			if (T < EPSILON) {
-				if (add_free_space_loss && (target_z > 0.)) {
-					if (cur_z > (target_z - free_space_supervision_distance)) { //ensures we sample enough points for the FS loss
-						break;
-					}
-				} else {
+		if (T < EPSILON) {
+			if (add_free_space_loss && (target_z > 0.)) {
+				if (cur_z > (target_z - free_space_supervision_distance)) { //ensures we sample enough points for the FS loss
 					break;
 				}
+			} else if (add_DSnerf_loss && (target_d > 0.)) {
+				if (cur_depth > (target_d + 3*DS_nerf_supervision_depth_sigma)) { //ensures we sample enough points for the DS loss
+					break;
+				}
+			} else {
+				break;
 			}
-		//}
+		}
 
 		const float alpha = 1.f - __expf(-density * dt);
 		const float weight = alpha * T;
