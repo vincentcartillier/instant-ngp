@@ -796,6 +796,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("counters_rgb_ba", &Testbed::Nerf::Training::counters_rgb_ba)
 		.def_readonly("counters_rgb_tracking", &Testbed::Nerf::Training::counters_rgb_tracking)
 		.def_readwrite("free_space_supervision_lambda", &Testbed::Nerf::Training::free_space_supervision_lambda)
+		.def_readwrite("free_space_supervision_lambda_tracking", &Testbed::Nerf::Training::free_space_supervision_lambda_tracking)
 		.def_readwrite("free_space_supervision_distance", &Testbed::Nerf::Training::free_space_supervision_distance)
 		.def_readwrite("truncation_distance", &Testbed::Nerf::Training::truncation_distance)
 		.def_readwrite("sdf_supervision_lambda", &Testbed::Nerf::Training::sdf_supervision_lambda)

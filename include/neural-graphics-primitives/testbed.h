@@ -776,6 +776,7 @@ public:
 			float extrinsic_learning_rate_rot = 1e-3f;
 
 			float free_space_supervision_lambda = 0.0f;
+			float free_space_supervision_lambda_tracking = 0.0f;
 			float free_space_supervision_distance = 0.0f;
 			float truncation_distance = 0.05f;
 			

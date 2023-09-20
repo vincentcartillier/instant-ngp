@@ -4499,12 +4499,12 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		float density = network_to_density(float(local_network_output[3]), density_activation);
 
 		if (T < EPSILON) {
-			if (add_free_space_loss && (target_z > 0.)) {
-				if (cur_z > (target_z - free_space_supervision_distance)) { //ensures we sample enough points for the FS loss
+			if (add_DSnerf_loss && (target_d > 0.)) {
+				if (cur_depth > (target_d + 3*DS_nerf_supervision_depth_sigma)) { //ensures we sample enough points for the DS loss
 					break;
 				}
-			} else if (add_DSnerf_loss && (target_d > 0.)) {
-				if (cur_depth > (target_d + 3*DS_nerf_supervision_depth_sigma)) { //ensures we sample enough points for the DS loss
+			} else if (add_free_space_loss && (target_d > 0.)) {
+				if (cur_depth > (target_d - free_space_supervision_distance)) { //ensures we sample enough points for the FS loss
 					break;
 				}
 			} else {
@@ -4618,7 +4618,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	lg.loss /= img_pdf * uv_pdf;
 
 	float ray_dir_norm = length(rays_in_unnormalized[i].d);
-	float target_depth = length(rays_in_unnormalized[i].d) * (((depth_supervision_lambda > 0.0f || add_DSnerf_loss) && metadata[img].depth) ? read_depth(uv, resolution, metadata[img].depth) : -1.0f);
+	float target_depth = length(rays_in_unnormalized[i].d) * (((depth_supervision_lambda > 0.0f || add_DSnerf_loss || add_free_space_loss) && metadata[img].depth) ? read_depth(uv, resolution, metadata[img].depth) : -1.0f);
 	LossAndGradient lg_depth;
 	if (use_custom_ray_marching) {
 		lg_depth = loss_and_gradient(vec3(target_depth / ray_dir_norm), vec3(depth_ray / ray_dir_norm), depth_loss_type);
@@ -4649,16 +4649,15 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	float free_space_loss = 0.;
 	uint32_t n_steps_for_free_space_loss = 0;
 	if (add_free_space_loss) {
-		if (target_z > 0.0f){
+		if (target_depth > 0.0f){
 			uint32_t tmp_j=0;
 			for (; tmp_j < compacted_numsteps; ++tmp_j) {
 				const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 				const float dt = unwarp_dt(coords_in.ptr->dt);
  		       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
 				float cur_depth = distance(pos, ray_o);
-				float cur_z = dot(cam_fwd, pos - ray_o);
-
-				if (cur_z > (target_z - free_space_supervision_distance)) {
+				
+				if (cur_depth > (target_depth - free_space_supervision_distance)) {
 					break;
 				}
 
@@ -4717,16 +4716,14 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		}
 	}
 
-
 	uint32_t total_rays = *rays_counter;
 	uint32_t total_rays_depth = *rays_counter_depth;
-
 
 	float rgb_loss = compAdd(lg.loss) / 3.0f;
 	float depth_loss = depth_loss_value + free_space_supervision_lambda*free_space_loss + DS_nerf_supervision_lambda*ds_nerf_loss;
 	float mean_loss = rgb_loss;
 	
-	//printf(" %f, %f, %f | ", rgb_loss, depth_loss_value, ds_nerf_loss);
+	//printf(" %f, %f, %f, %f | ", rgb_loss, depth_loss_value, ds_nerf_loss, free_space_loss);
 
 	if (loss_output) {
 		loss_output[i] = rgb_loss / (float)total_rays + depth_loss / (float)total_rays_depth;
@@ -4825,9 +4822,9 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 
 		//adding free space supervision using depth
 		if (add_free_space_loss) {
-			if (target_z > 0.0f){
+			if (target_depth > 0.f){
 				if (n_steps_for_free_space_loss>0){
-					if (cur_z <= (target_z - free_space_supervision_distance)) {
+					if (depth <= (target_depth - free_space_supervision_distance)) {
 						dloss_by_dmlp += loss_scale_depth * density_derivative * free_space_supervision_lambda * 2 * alpha * dt * __expf(-density*dt) / (float)n_steps_for_free_space_loss;
 					}
 				}
@@ -6768,7 +6765,7 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 				m_nerf.training.use_depth_var_in_tracking_loss,
 				m_max_grid_level_factor,
 		    	m_add_free_space_loss_tracking,
-				m_nerf.training.free_space_supervision_lambda,
+				m_nerf.training.free_space_supervision_lambda_tracking,
 				m_nerf.training.free_space_supervision_distance,
 			    m_nerf.training.truncation_distance,
 		    	m_add_sdf_loss_tracking,
@@ -6835,7 +6832,7 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 				m_nerf.training.use_depth_var_in_tracking_loss,
 				m_max_grid_level_factor,
 		    	m_add_free_space_loss_tracking,
-				m_nerf.training.free_space_supervision_lambda,
+				m_nerf.training.free_space_supervision_lambda_tracking,
 				m_nerf.training.free_space_supervision_distance,
 				nullptr,
 				m_use_custom_ray_marching,
@@ -6960,6 +6957,7 @@ __global__ void generate_training_samples_for_tracking_gp(
 	const uint32_t max_samples,
 	default_rng_t rng,
 	uint32_t* __restrict__ ray_counter,
+	uint32_t* __restrict__ ray_counter_depth,
 	uint32_t* __restrict__ numsteps_counter,
 	uint32_t* __restrict__ ray_indices_out,
 	Ray* __restrict__ rays_out_unnormalized,
@@ -7034,6 +7032,8 @@ __global__ void generate_training_samples_for_tracking_gp(
 		}
 	}
 
+	float target_depth = length(ray_unnormalized.d) * target_z;
+
 	vec3 ray_d_normalized = normalize(ray_unnormalized.d);
 
 	vec2 tminmax = aabb.ray_intersect(ray_unnormalized.o, ray_d_normalized);
@@ -7056,14 +7056,22 @@ __global__ void generate_training_samples_for_tracking_gp(
 		float dt;
 		if (use_custom_ray_marching){
 			float cur_z = dot(cam_fwd, pos - ray_o);
-			//TODO add perturb
 			dt = calc_dt_slaim(
 				cur_z, target_z, dt_for_regular_sampling, 
 				dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling,
 				cam_fwd_factor, use_depth_guided_sampling
 			);
 		} else {
-			dt = calc_dt(t, cone_angle);
+			if (use_depth_guided_sampling) {
+				float cur_depth = distance(pos, ray_o);
+				dt = calc_dt_with_depth_guided_sampling(
+					t, cone_angle,
+					cur_depth, target_depth,
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+				);
+			} else {
+				dt = calc_dt(t, cone_angle);
+			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid) {
@@ -7090,6 +7098,11 @@ __global__ void generate_training_samples_for_tracking_gp(
 	coords_out += base;
 
 	uint32_t ray_idx = atomicAdd(ray_counter, 1);
+	
+	// get depth_ray_counters
+	if (target_depth > 0.) {
+		uint32_t ray_idx_depth = atomicAdd(ray_counter_depth, 1);
+	}
 
 	ray_indices_out[ray_idx] = i;
 	mapping_indices[i] = ray_idx;
@@ -7104,14 +7117,22 @@ __global__ void generate_training_samples_for_tracking_gp(
 		float dt;
 		if (use_custom_ray_marching){
 			float cur_z = dot(cam_fwd, pos - ray_o);
-			//TODO add perturb
 			dt = calc_dt_slaim(
 				cur_z, target_z, dt_for_regular_sampling, 
 				dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling,
 				cam_fwd_factor, use_depth_guided_sampling
 			);
 		} else {
-			dt = calc_dt(t, cone_angle);
+			if (use_depth_guided_sampling) {
+				float cur_depth = distance(pos, ray_o);
+				dt = calc_dt_with_depth_guided_sampling(
+					t, cone_angle,
+					cur_depth, target_depth,
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+				);
+			} else {
+				dt = calc_dt(t, cone_angle);
+			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid) {
@@ -7169,7 +7190,11 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
     const float* __restrict__ xy_image_pixel_indices,
 	float* __restrict__ ground_truth_rgbd,
 	float* __restrict__ reconstructed_rgbd,
-	float* __restrict__ reconstructed_depth_var
+	float* __restrict__ reconstructed_depth_var,
+	const bool add_DSnerf_loss,
+	const float DS_nerf_supervision_depth_sigma,
+	const bool add_free_space_loss,
+	const float free_space_supervision_distance
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -7180,6 +7205,25 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 
 	coords_in += base;
 	network_output += base * padded_output_width;
+
+	// Must be same seed as above to obtain the same
+	// background color.
+	uint32_t ray_idx = ray_indices[i];
+	rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
+
+	uint32_t img;
+	if (image_ids) {
+		img = image_ids[ray_idx];
+	} else {
+		img = indice_image_for_tracking_pose;
+	}
+
+	ivec2 resolution = metadata[img].resolution;
+
+	vec2 uv(xy_image_pixel_indices[2*ray_idx], xy_image_pixel_indices[2*ray_idx+1]);
+	//rng.advance(1); // motionblur_time
+
+	float target_depth = length(rays_in_unnormalized[i].d) * ((metadata[img].depth) ? read_depth(uv, resolution, metadata[img].depth) : -1.0f);
 
 	float T = 1.f;
 
@@ -7192,17 +7236,26 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 	uint32_t compacted_numsteps = 0;
 	vec3 ray_o = rays_in_unnormalized[i].o;
 	for (; compacted_numsteps < numsteps; ++compacted_numsteps) {
-		if (T < EPSILON) {
-			break;
-		}
-
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 		const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
 		const float dt = unwarp_dt(coords_in.ptr->dt);
 		float cur_depth = distance(pos, ray_o);
 		float density = network_to_density(float(local_network_output[3]), density_activation);
-
+		
+		if (T < EPSILON) {
+			if (add_DSnerf_loss && (target_depth > 0.)) {
+				if (cur_depth > (target_depth + 3*DS_nerf_supervision_depth_sigma)) { //ensures we sample enough points for the DS loss
+					break;
+				}
+			} else if (add_free_space_loss && (target_depth > 0.)) {
+				if (cur_depth > (target_depth - free_space_supervision_distance)) { //ensures we sample enough points for the FS loss
+					break;
+				}
+			} else {
+				break;
+			}
+		}
 
 		const float alpha = 1.f - __expf(-density * dt);
 		const float weight = alpha * T;
@@ -7244,23 +7297,6 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
     	reconstructed_depth_var[i] = depth_var;
 	}
 
-	// Must be same seed as above to obtain the same
-	// background color.
-	uint32_t ray_idx = ray_indices[i];
-	rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
-
-	uint32_t img;
-	if (image_ids) {
-		img = image_ids[ray_idx];
-	} else {
-		img = indice_image_for_tracking_pose;
-	}
-
-	ivec2 resolution = metadata[img].resolution;
-
-	vec2 uv(xy_image_pixel_indices[2*ray_idx], xy_image_pixel_indices[2*ray_idx+1]);
-	//rng.advance(1); // motionblur_time
-
 	if (train_with_random_bg_color) {
 		background_color = random_val_3d(rng);
 	}
@@ -7301,8 +7337,6 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 		// support arbitrary background colors
 		rgb_ray += T * background_color;
 	}
-
-	float target_depth = length(rays_in_unnormalized[i].d) * ((metadata[img].depth) ? read_depth(uv, resolution, metadata[img].depth) : -1.0f);
 
     ground_truth_rgbd[i*4+0] = rgbtarget.x;
     ground_truth_rgbd[i*4+1] = rgbtarget.y;
@@ -7558,7 +7592,7 @@ __global__ void compute_loss_gp(
 		// Note that here we should devide depth_loss by the number of depth rays
 		// We're making this approximation for efficiency.
 		// But the gradients are properly normalized
-		// /!\ This loss doesn't take into account the FS loss (if ever used)
+		// /!\ This loss doesn't take into account the FS or DS loss (if ever used)
 		// But the FS loss will be taken into account in gradients
 		// see compute_gradient gp function
 		loss_output[i] = (mean_loss + depth_loss_value) / (float)n_rays;
@@ -7619,9 +7653,16 @@ __global__ void compute_gradient_gp(
 	const float* __restrict__ reconstructed_rgbd,
     const uint32_t* __restrict__ existing_ray_mapping_gpu,
 	float* __restrict__ losses_and_gradients,
+	const uint32_t* __restrict__ ray_counter_depth,
 	const uint32_t* __restrict__ super_ray_counter,
 	const uint32_t* __restrict__ super_ray_counter_depth,
-	float* __restrict__ sample_outputs
+	float* __restrict__ sample_outputs,
+	const bool add_DSnerf_loss,
+	const float DS_nerf_supervision_lambda,
+	const float DS_nerf_supervision_depth_sigma,
+	const bool add_free_space_loss,
+	const float free_space_supervision_lambda,
+	const float free_space_supervision_distance
 ) {
 
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -7656,6 +7697,7 @@ __global__ void compute_gradient_gp(
 
     uint32_t total_n_rays = *super_ray_counter;
     uint32_t total_n_rays_depth = *super_ray_counter_depth;
+    uint32_t total_n_rays_depth_for_DS = *ray_counter_depth;
 
     float loss_scale_rgb = loss_scale / (float)total_n_rays;
     float loss_scale_depth;
@@ -7664,6 +7706,12 @@ __global__ void compute_gradient_gp(
     } else {
         loss_scale_depth = 0.0;
     }
+	float loss_scale_depth_DS = 0.0;
+    if (total_n_rays_depth_for_DS>0){
+        loss_scale_depth_DS = loss_scale / (float)total_n_rays_depth_for_DS;
+	}
+
+	float EPSILON = 1e-4f;
 
 	//DEBUG.
 	// loss_scale_rgb = loss_scale / (float)n_rays;
@@ -7694,6 +7742,33 @@ __global__ void compute_gradient_gp(
 
 	vec3 ray_o = rays_in_unnormalized[ray_idx].o;
 
+	//
+	//
+	//
+	// Free Space loss: compute normalizer
+	uint32_t n_steps_for_free_space_loss = 0;
+	if (add_free_space_loss) {
+		if (depth_ray_target > 0.0f){
+			uint32_t tmp_j=0;
+			for (; tmp_j < numsteps_compact; ++tmp_j) {
+				const float dt = unwarp_dt(coords_in.ptr->dt);
+ 		       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
+				float cur_depth = distance(pos, ray_o);
+				
+				if (cur_depth > (depth_ray_target - free_space_supervision_distance)) {
+					break;
+				}
+				
+				coords_in += 1;
+			}
+			if (tmp_j > 0) {
+				n_steps_for_free_space_loss = tmp_j;
+				coords_in -= tmp_j; // rewind the pointer
+			}
+		}
+	}
+
+
     for (uint32_t j=0; j < numsteps_compact; ++j) {
 
         // Compact network inputs
@@ -7710,6 +7785,7 @@ __global__ void compute_gradient_gp(
 	    const float density = network_to_density(float(local_network_output[3]), density_activation);
 	    const float alpha = 1.f - __expf(-density * dt);
 	    const float weight = alpha * T;
+		const float h = alpha * T + EPSILON;
 	    rgb_ray2 += weight * rgb;
 	    depth_ray2 += weight * depth;
 	    T *= (1.f - alpha);
@@ -7738,6 +7814,33 @@ __global__ void compute_gradient_gp(
 	    float dloss_by_dmlp = density_derivative * (
 			dt * (loss_scale_rgb /3.0 * dot(tmp, T * rgb - suffix) + loss_scale_depth * depth_supervision)
 	    );
+
+		//adding free space supervision using depth
+		if (add_free_space_loss) {
+			if (depth_ray_target > 0.f){
+				float target_depth = depth_ray_target;
+				if (n_steps_for_free_space_loss>0){
+					if (depth <= (target_depth - free_space_supervision_distance)) {
+						dloss_by_dmlp += loss_scale_depth_DS * density_derivative * free_space_supervision_lambda * 2 * alpha * dt * __expf(-density*dt) / (float)n_steps_for_free_space_loss;
+					}
+				}
+			}
+		}
+
+		if (add_DSnerf_loss) {
+			if (depth_ray_target > 0.f){
+					float target_depth = depth_ray_target;
+					float tmp_ds_grad = -dt*dt*T/h*__expf(-((depth-target_depth)*(depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+					for (uint32_t k = j+1; k < numsteps_compact; ++k) {
+						const NerfCoordinate* tmp_coord_in = coords_in(k);
+						const vec3 tmp_pos = unwarp_position(tmp_coord_in->pos.p, aabb);
+						float tmp_depth = distance(tmp_pos, ray_o);
+						float tmp_dt = unwarp_dt(tmp_coord_in->dt);
+						tmp_ds_grad += dt * tmp_dt * __expf(-((tmp_depth-target_depth)*(tmp_depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+					}
+					dloss_by_dmlp += loss_scale_depth_DS * density_derivative * DS_nerf_supervision_lambda * tmp_ds_grad;
+			}
+		}
 
 	    local_dL_doutput[3] =
 	    	dloss_by_dmlp +
@@ -7978,7 +8081,8 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		uint32_t, // num super rays counter
 		uint32_t, // num super rays counter depth
 		uint32_t, // mapping of existing rays
-		float  // super ray gradients
+		float,  // super ray gradients
+		uint32_t // ray_counter_depth
 	>(
 		stream, &alloc,
 		n_total_rays_for_gradient, // counters.rays_per_batch,
@@ -7998,7 +8102,8 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
         1,
         1,
 		n_total_rays,
-		n_super_rays * 6
+		n_super_rays * 6,
+		1
 	);
 
 	// TODO: C++17 structured binding
@@ -8020,6 +8125,7 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 	uint32_t* super_ray_counter_depth = std::get<15>(scratch);
     uint32_t* existing_ray_mapping_gpu = std::get<16>(scratch);
 	float* super_ray_gradients = std::get<17>(scratch);
+	uint32_t* ray_counter_depth = std::get<18>(scratch);
 
 	//uint32_t max_inference = next_multiple(std::min(n_total_rays_for_gradient * 1024, max_samples), tcnn::batch_size_granularity);
 	uint32_t max_inference=max_samples;
@@ -8042,6 +8148,7 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 	counters.n_rays_total += n_total_rays;
 
 	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter, 0, sizeof(uint32_t), stream));
+	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter_depth, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter_depth, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_gradients, 0, n_super_rays * 6 * sizeof(uint32_t), stream));
@@ -8080,6 +8187,7 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		max_inference,
 		m_rng,
 		ray_counter,
+		ray_counter_depth,
 		counters.numsteps_counter.data(),
 		ray_indices,
 		rays_unnormalized,
@@ -8184,7 +8292,11 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
       	xy_image_pixel_indices,
        	ground_truth_rgbd_gpu.data(),
        	reconstructed_rgbd_gpu.data(),
-		m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_gpu.data() : nullptr
+		m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_gpu.data() : nullptr,
+		m_add_DSnerf_loss_tracking,
+		m_nerf.training.DS_nerf_supervision_depth_sigma,
+		m_add_free_space_loss_tracking,
+		m_nerf.training.free_space_supervision_distance
 	);
 
 
@@ -8383,9 +8495,16 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
         reconstructed_rgbd_gpu.data(),
         existing_ray_mapping_gpu,
         partial_derivatives.back().data(),
+		ray_counter_depth,
 		super_ray_counter,
 		super_ray_counter_depth,
-		m_debug ? sample_outputs.data(): nullptr
+		m_debug ? sample_outputs.data(): nullptr,
+		m_add_DSnerf_loss_tracking,
+		m_nerf.training.DS_nerf_supervision_lambda_tracking,
+		m_nerf.training.DS_nerf_supervision_depth_sigma,
+		m_add_free_space_loss_tracking,
+		m_nerf.training.free_space_supervision_lambda_tracking,
+		m_nerf.training.free_space_supervision_distance
 	);
 
 
@@ -10311,7 +10430,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		uint32_t, // num super rays counter depth
 		uint32_t, // mapping of existing rays
 		float,  // super ray gradients
-		uint32_t // image ids of sampled rays
+		uint32_t, // image ids of sampled rays
+		uint32_t // ray_counter_depth
 	>(
 		stream, &alloc,
 		n_total_rays_for_gradient, // counters.rays_per_batch,
@@ -10332,7 +10452,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
         1,
 		n_total_rays,
 		n_super_rays * 6,
-		n_total_rays
+		n_total_rays,
+		1
 	);
 
 	// TODO: C++17 structured binding
@@ -10355,6 +10476,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
     uint32_t* existing_ray_mapping_gpu = std::get<16>(scratch);
 	float* super_ray_gradients = std::get<17>(scratch);
     uint32_t* image_ids_gpu = std::get<18>(scratch);
+	uint32_t* ray_counter_depth = std::get<19>(scratch);
 
 	//uint32_t max_inference = next_multiple(std::min(n_total_rays_for_gradient * 1024, max_samples), tcnn::batch_size_granularity);
     //counters.measured_batch_size_before_compaction = max_inference;
@@ -10401,6 +10523,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 	// bool accumulate_error = true;
 
 	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter, 0, sizeof(uint32_t), stream));
+	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter_depth, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_counter_depth, 0, sizeof(uint32_t), stream));
 	CUDA_CHECK_THROW(cudaMemsetAsync(super_ray_gradients, 0, n_super_rays * 6 * sizeof(uint32_t), stream));
@@ -10442,6 +10565,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		max_inference,
 		m_rng,
 		ray_counter,
+		ray_counter_depth,
 		counters.numsteps_counter.data(),
 		ray_indices,
 		rays_unnormalized,
@@ -10477,6 +10601,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 	//DEBUG
 	//DEBUG
 	m_ray_counter = m_track_pose_nerf_num_rays_in_tracking_step;
+	m_rays_per_batch = counters.rays_per_batch;
 	//DEBUG
 	//DEBUG
 	// -- get sample coordinates for each ray
@@ -10545,7 +10670,11 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
        		xy_image_pixel_indices,
         	ground_truth_rgbd_gpu.data(),
         	reconstructed_rgbd_gpu.data(),
-			m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_gpu.data() : nullptr
+			m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_gpu.data() : nullptr,
+			m_add_DSnerf_loss,
+		    m_nerf.training.DS_nerf_supervision_depth_sigma,
+			m_add_free_space_loss,
+			m_nerf.training.free_space_supervision_distance
 		);
 
 
@@ -10703,9 +10832,16 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
         reconstructed_rgbd_gpu.data(),
         existing_ray_mapping_gpu,
         partial_derivatives.back().data(),
+		ray_counter_depth,
 		super_ray_counter,
 		super_ray_counter_depth,
-		nullptr
+		nullptr,
+		m_add_DSnerf_loss,
+		m_nerf.training.DS_nerf_supervision_lambda,
+		m_nerf.training.DS_nerf_supervision_depth_sigma,
+		m_add_free_space_loss,
+		m_nerf.training.free_space_supervision_lambda,
+		m_nerf.training.free_space_supervision_distance
 	);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
