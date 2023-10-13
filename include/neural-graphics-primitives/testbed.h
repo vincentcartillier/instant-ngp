@@ -201,7 +201,9 @@ public:
 			cudaStream_t stream,
 			//SDF
             const bool use_sdf_in_nerf,
+            const bool use_volsdf_in_nerf,
             float truncation_distance,
+            float sdf_beta,
 			//Custom Ray marching
 			const bool use_custom_ray_marching,
 			const float dt_for_regular_sampling
@@ -779,12 +781,17 @@ public:
 			float free_space_supervision_lambda_tracking = 0.0f;
 			float free_space_supervision_distance = 0.0f;
 			float truncation_distance = 0.05f;
+			float volsdf_beta = 0.1f;
 			
 			float DS_nerf_supervision_lambda = 0.0f;
 			float DS_nerf_supervision_depth_sigma = 1.0f;
 			float DS_nerf_supervision_lambda_tracking = 0.0f;
 
 			float sdf_supervision_lambda = 0.0f;
+			float sdf_supervision_lambda_tracking = 0.0f;
+			
+			float sdf_free_space_supervision_lambda = 0.0f;
+			float sdf_free_space_supervision_lambda_tracking = 0.0f;
 
 			bool m_use_ray_counter_per_image_in_ba=false;
 			bool m_reset_ray_counters_and_gradients_for_ba=false;
@@ -942,18 +949,24 @@ public:
 
 	bool m_reset_prep_nerf_mapping = false;
 
-	bool m_add_free_space_loss = false;
-	bool m_add_sdf_loss = false;
 	bool m_add_DSnerf_loss = false;
 	bool m_add_DSnerf_loss_tracking = false;
 
+	bool m_add_free_space_loss = false;
 	bool m_add_free_space_loss_tracking = false;
-	bool m_add_sdf_loss_tracking = false;
 
-    bool m_use_sdf_in_nerf = false;
     bool m_use_density_in_nerf_sampling = true;
-
 	bool m_use_depth_guided_sampling = false;
+
+	// SDF as in Co-SLAM (no intermediate density)
+    bool m_use_sdf_in_nerf = false;
+	bool m_add_sdf_loss = false;
+	bool m_add_sdf_loss_tracking = false;
+	
+	// SDF as in VolSDF/BakedSDF (with intermediate density)
+    bool m_use_volsdf_in_nerf = false;
+	bool m_add_sdf_free_space_loss = false;
+	bool m_add_sdf_free_space_loss_tracking = false;
 
 	void track_steps(
 	    const uint32_t cam_id,
