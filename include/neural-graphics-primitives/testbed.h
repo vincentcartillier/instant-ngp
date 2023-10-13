@@ -201,6 +201,7 @@ public:
 			cudaStream_t stream,
 			//SDF
             const bool use_sdf_in_nerf,
+            const bool use_stylesdf_in_nerf,
             const bool use_volsdf_in_nerf,
             float truncation_distance,
             float sdf_beta,
@@ -964,6 +965,7 @@ public:
 	bool m_add_sdf_loss_tracking = false;
 	
 	// SDF as in VolSDF/BakedSDF (with intermediate density)
+    bool m_use_stylesdf_in_nerf = false;
     bool m_use_volsdf_in_nerf = false;
 	bool m_add_sdf_free_space_loss = false;
 	bool m_add_sdf_free_space_loss_tracking = false;

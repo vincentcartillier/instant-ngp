@@ -605,6 +605,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("add_free_space_loss_tracking", &Testbed::m_add_free_space_loss_tracking)
 		.def_readwrite("use_sdf_in_nerf", &Testbed::m_use_sdf_in_nerf)
 		.def_readwrite("use_volsdf_in_nerf", &Testbed::m_use_volsdf_in_nerf)
+		.def_readwrite("use_stylesdf_in_nerf", &Testbed::m_use_stylesdf_in_nerf)
 		.def_readwrite("use_density_in_nerf_sampling", &Testbed::m_use_density_in_nerf_sampling)
 		.def_readwrite("use_depth_guided_sampling", &Testbed::m_use_depth_guided_sampling)
 		.def_readwrite("use_custom_ray_marching", &Testbed::m_use_custom_ray_marching)
