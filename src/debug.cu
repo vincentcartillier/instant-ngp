@@ -238,12 +238,13 @@ int main(int argc, char** argv) {
     instant_ngp.m_nerf.training.free_space_supervision_distance= 0.1 * poses_scale * scale;
 
     //settings
-    instant_ngp.m_use_volsdf_in_nerf = true;
+    instant_ngp.m_use_volsdf_in_nerf = false;
+    instant_ngp.m_use_coslam_sdf_in_nerf = true;
     instant_ngp.m_nerf.training.volsdf_beta = 0.1;
     instant_ngp.m_add_sdf_loss = true;
     instant_ngp.m_add_sdf_free_space_loss = true;
-    instant_ngp.m_nerf.training.sdf_supervision_lambda= 1000.0;
-    instant_ngp.m_nerf.training.sdf_free_space_supervision_lambda= 10.0;
+    instant_ngp.m_nerf.training.sdf_supervision_lambda= 100000.0;
+    instant_ngp.m_nerf.training.sdf_free_space_supervision_lambda= 1.0;
 
     //instant_ngp.m_nerf.training.sdf_supervision_lambda= 5000.0;
     instant_ngp.m_nerf.training.truncation_distance = 0.1 * poses_scale * scale;
@@ -258,7 +259,7 @@ int main(int argc, char** argv) {
     instant_ngp.m_train_encoding = true;
     instant_ngp.m_train_network = true;
     uint32_t batch_size=256000;
-    for (uint32_t i=0; i<20; ++i) {
+    for (uint32_t i=0; i<50; ++i) {
         instant_ngp.map(batch_size);
         tlog::info()<<"  ----- mapping loss: "<<instant_ngp.m_loss_scalar.val();
     }

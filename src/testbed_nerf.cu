@@ -362,6 +362,14 @@ __device__ __inline__ float sigmoid(float a)
         return 1.0 / (1.0 + __expf(-a));
 }
 
+__device__ float coslam_sdf_to_weight(float val, float beta) {
+	return sigmoid(val / beta) * sigmoid(-val / beta);
+}
+
+__device__ float coslam_sdf_to_weight_derivative(float val, float beta) {
+	return 1/beta * sigmoid(val / beta) * sigmoid(-val / beta) * (sigmoid(-val / beta) - sigmoid(val / beta));
+}
+
 __device__ float style_sdf_to_density(float val, float beta) {
 	return 1 / beta * sigmoid(-val / beta);
 }
@@ -675,7 +683,7 @@ __global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements,
 __global__ void splat_grid_samples_nerf_max_nearest_neighbor(const uint32_t n_elements, const uint32_t* __restrict__ indices, 
 															const tcnn::network_precision_t* network_output, float* __restrict__ grid_out, 
 															ENerfActivation rgb_activation, ENerfActivation density_activation,
-															const bool use_volsdf, const bool use_stylesdf, const float beta
+															const bool use_volsdf, const bool use_stylesdf, const bool use_coslam_sdf, const float beta
 															) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -691,6 +699,8 @@ __global__ void splat_grid_samples_nerf_max_nearest_neighbor(const uint32_t n_el
 		mlp = vol_sdf_to_density(mlp, beta);
 	} else if (use_stylesdf) {
 		mlp = style_sdf_to_density(mlp, beta);
+	} else if (use_coslam_sdf){
+		mlp = vol_sdf_to_density(mlp, beta/10.);
 	}
 	
 	float optical_thickness = mlp * scalbnf(MIN_CONE_STEPSIZE(), level);
@@ -1203,7 +1213,9 @@ __global__ void composite_kernel_nerf(
 	float min_transmittance,
 	const bool use_style_sdf,
 	const bool use_vol_sdf,
-	const float beta
+	const bool use_coslam_sdf,
+	const float beta,
+	const float truncation_distance
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -1222,6 +1234,10 @@ __global__ void composite_kernel_nerf(
 	uint32_t actual_n_steps = payload.n_steps;
 	uint32_t j = 0;
 
+	// coslam sdf related stuff
+	bool found_surface = payload.found_surface;
+	float surface_d = payload.zmin;
+
 	for (; j < actual_n_steps; ++j) {
 		tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output;
 		local_network_output[0] = network_output[i + j * n_elements + 0 * stride];
@@ -1231,20 +1247,39 @@ __global__ void composite_kernel_nerf(
 		const NerfCoordinate* input = network_input(i + j * n_elements);
 		vec3 warped_pos = input->pos.p;
 		vec3 pos = unwarp_position(warped_pos, aabb);
+		
+		float cur_depth = distance(pos, origin);
+		float weight;
+		float alpha;
 
-		float T = 1.f - local_rgba.a;
-		float dt = unwarp_dt(input->dt);
-		float density = network_to_density(float(local_network_output[3]), density_activation);
-		if (use_vol_sdf) {
-			density = vol_sdf_to_density(density, beta);
-		} else if (use_style_sdf) {
-			density = style_sdf_to_density(density, beta);
+		if (use_coslam_sdf) {
+			float sdf = network_to_density(float(local_network_output[3]), density_activation);
+			if (sdf<0. && !found_surface){
+				found_surface=true;
+				surface_d=cur_depth;
+				payload.found_surface=true;
+				payload.zmin=cur_depth;
+			}
+			if (found_surface && (cur_depth>surface_d+truncation_distance)){
+				weight=0.f;
+			} else {
+				weight = coslam_sdf_to_weight(sdf, beta);
+			}
+		} else {
+			float T = 1.f - local_rgba.a;
+			float dt = unwarp_dt(input->dt);
+			float density = network_to_density(float(local_network_output[3]), density_activation);
+			if (use_vol_sdf) {
+				density = vol_sdf_to_density(density, beta);
+			} else if (use_style_sdf) {
+				density = style_sdf_to_density(density, beta);
+			}
+			alpha = 1.f - __expf(-density * dt);
+			if (show_accel >= 0) {
+				alpha = 1.f;
+			}
+			weight = alpha * T;
 		}
-		float alpha = 1.f - __expf(-density * dt);
-		if (show_accel >= 0) {
-			alpha = 1.f;
-		}
-		float weight = alpha * T;
 
 		vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 
@@ -1380,9 +1415,16 @@ __global__ void composite_kernel_nerf(
 			local_depth = dot(cam_fwd, pos - camera_matrix[3]);
 		}
 
-		if (local_rgba.a > (1.0f - min_transmittance)) {
-			local_rgba /= local_rgba.a;
-			break;
+		if (use_coslam_sdf){
+			if (found_surface && (cur_depth>surface_d+truncation_distance)) {
+				local_rgba /= local_rgba.a;
+				break;
+			}
+		} else {
+			if (local_rgba.a > (1.0f - min_transmittance)) {
+				local_rgba /= local_rgba.a;
+				break;
+			}
 		}
 	}
 
@@ -2151,6 +2193,9 @@ __global__ void shade_kernel_nerf(
 	NerfPayload& payload = payloads[i];
 
 	vec4 tmp = rgba[i];
+	if (use_sdf_in_nerf){
+		tmp /= tmp.a;
+	}
 
 	//DEBUG
 	//if (tmp.a > 1.1){printf(" %f |", tmp.a);}
@@ -2500,6 +2545,7 @@ uint32_t Testbed::NerfTracer::trace(
     const bool use_sdf_in_nerf,
     const bool use_stylesdf_in_nerf,
     const bool use_volsdf_in_nerf,
+    const bool use_coslam_sdf_in_nerf,
     float truncation_distance,
     float sdf_beta,
 	//Custom SLAIM sampling related vars
@@ -2630,7 +2676,9 @@ uint32_t Testbed::NerfTracer::trace(
 		    	min_transmittance,
     			use_stylesdf_in_nerf,
     			use_volsdf_in_nerf,
-				sdf_beta
+    			use_coslam_sdf_in_nerf,
+				sdf_beta,
+				truncation_distance
 		    );
         }
 
@@ -2793,7 +2841,7 @@ void Testbed::render_nerf(
 		m_nerf.cone_angle_constant,
 		render_mode,
 		stream,
-		m_use_sdf_in_nerf
+		(m_use_sdf_in_nerf||m_use_coslam_sdf_in_nerf)
 	);
 
 	uint32_t n_hit;
@@ -2828,6 +2876,7 @@ void Testbed::render_nerf(
             m_use_sdf_in_nerf,
             m_use_stylesdf_in_nerf,
             m_use_volsdf_in_nerf,
+            m_use_coslam_sdf_in_nerf,
 		    m_nerf.training.truncation_distance,
 			m_nerf.training.volsdf_beta,
 			//Custom Ray marching,
@@ -2864,7 +2913,7 @@ void Testbed::render_nerf(
 			m_nerf.training.linear_colors,
 			render_buffer.frame_buffer,
 			render_buffer.depth_buffer,
-			m_use_sdf_in_nerf
+			m_use_sdf_in_nerf || m_use_coslam_sdf_in_nerf
 		);
 		return;
 	}
@@ -2878,7 +2927,7 @@ void Testbed::render_nerf(
 		m_nerf.training.linear_colors,
 		render_buffer.frame_buffer,
 		render_buffer.depth_buffer,
-		m_use_sdf_in_nerf
+		m_use_sdf_in_nerf || m_use_coslam_sdf_in_nerf
 	);
 
 	if (render_mode == ERenderMode::Cost) {
@@ -3261,7 +3310,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			m_nerf_network->density(stream, density_grid_position_matrix, density_matrix, false);
 		}
 
-		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_nerf.training.volsdf_beta);
+		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta);
 		linear_kernel(ema_grid_samples_nerf, 0, stream, n_elements, decay, m_nerf.density_grid_ema_step, m_nerf.density_grid.data(), density_grid_tmp);
 
 		++m_nerf.density_grid_ema_step;
@@ -4015,7 +4064,7 @@ GPUMemory<float> Testbed::get_density_on_grid(ivec3 res3d, const BoundingBox& aa
 			positions + offset,
 			nerf_mode ? m_nerf.density_grid.data() : nullptr,
 			m_nerf.max_cascade,
-			(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf)
+			(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_coslam_sdf_in_nerf)
 		);
 	}
 
@@ -4508,6 +4557,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	//SDF
 	const bool use_stylesdf,
 	const bool use_volsdf,
+	const bool use_coslam_sdf,
 	const float truncation_distance,
 	const float beta,
 	const bool add_sdf_loss,
@@ -4551,6 +4601,11 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 
 	float T = 1.f;
 
+	//coslam SDF stuff
+	bool found_surface = false;	
+	float surface_d = 0.f;	
+	float weight_sum = 0.f;
+
 	float EPSILON = 1e-4f;
 
 	vec3 rgb_ray = vec3(0.0f);
@@ -4585,35 +4640,65 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		const float dt = unwarp_dt(coords_in.ptr->dt);
 		float cur_depth = distance(pos, ray_o);
 		float cur_z = dot(cam_fwd, pos - ray_o);
+		float weight;
 
-		float density = network_to_density(float(local_network_output[3]), density_activation);
-		if (use_volsdf){
-			density = vol_sdf_to_density(density, beta);
-		} else if(use_stylesdf){
-			density = style_sdf_to_density(density, beta);
-		}
+		if (use_coslam_sdf) {
+			float sdf = network_to_density(float(local_network_output[3]), density_activation);
+			if (sdf < 0. && !found_surface) {
+				found_surface=true;
+				surface_d=cur_depth;
+			}
+			if (found_surface && (cur_depth >(surface_d+truncation_distance))) {
+				weight = 0.f;
+				//Need to keep sampling for loss supervison (SDF)
+				if (min_depth_for_sampling > 0.0) {
+					if (cur_depth > min_depth_for_sampling) { //ensures we sample enough points for the corresponding losses
+						break;
+					}
+				} else {break;}
+			} else {
+				weight = coslam_sdf_to_weight(sdf, beta);
+				weight_sum += weight;
+			}
+		} else {
+			float density = network_to_density(float(local_network_output[3]), density_activation);
+			if (use_volsdf){
+				density = vol_sdf_to_density(density, beta);
+			} else if(use_stylesdf){
+				density = style_sdf_to_density(density, beta);
+			}
 
-		if (T < EPSILON) {
-			if (min_depth_for_sampling > 0.0) {
-				if (cur_depth > min_depth_for_sampling) { //ensures we sample enough points for the corresponding losses
+			if (T < EPSILON) {
+				if (min_depth_for_sampling > 0.0) {
+					if (cur_depth > min_depth_for_sampling) { //ensures we sample enough points for the corresponding losses
+						break;
+					}
+				} else {
 					break;
 				}
-			} else {
-				break;
 			}
-		}
 
-		const float alpha = 1.f - __expf(-density * dt);
-		const float weight = alpha * T;
+			const float alpha = 1.f - __expf(-density * dt);
+			weight = alpha * T;
+			T *= (1.f - alpha);
+		}
+		
 		rgb_ray += weight * rgb;
 		hitpoint += weight * pos;
 		depth_ray += weight * cur_depth;
-		T *= (1.f - alpha);
 
 		network_output += padded_output_width;
 		coords_in += 1;
 	}
-	hitpoint /= (1.0f - T);
+	if (use_coslam_sdf) {
+		weight_sum += 1e-6f;
+		rgb_ray /= weight_sum;
+		depth_ray /= weight_sum;
+		hitpoint /= weight_sum;
+		T = 0.;
+	} else {
+		hitpoint /= (1.0f - T);
+	}
 
 	// compute depth variance
 	float depth_var = 0.f;
@@ -4627,24 +4712,36 @@ __global__ void compute_loss_kernel_train_nerf_slam(
  	       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
 			const float dt = unwarp_dt(coords_in.ptr->dt);
 			float cur_depth = distance(pos, ray_o);
-			float density = network_to_density(float(local_network_output[3]), density_activation);
-			if (use_volsdf){
-				density = vol_sdf_to_density(density, beta);
-			} else if (use_stylesdf){
-				density = style_sdf_to_density(density, beta);
+ 	 	    float tmp = (cur_depth - depth_ray) * (cur_depth - depth_ray);
+			float weight;
+
+			if (use_coslam_sdf) {
+				float sdf = network_to_density(float(local_network_output[3]), density_activation);
+				if (found_surface && (cur_depth >(surface_d+truncation_distance))) {
+					weight = 0.f; //still need to go thru the entire pointer (then easier to rewind)
+				} else {
+					weight = coslam_sdf_to_weight(sdf, beta) / weight_sum;
+				}
+			} else {
+				float density = network_to_density(float(local_network_output[3]), density_activation);
+				if (use_volsdf){
+					density = vol_sdf_to_density(density, beta);
+				} else if (use_stylesdf){
+					density = style_sdf_to_density(density, beta);
+				}
+				const float alpha = 1.f - __expf(-density * dt);
+				weight = alpha * T;
+				T *= (1.f - alpha);
 			}
 
- 	       	float tmp = (cur_depth - depth_ray) * (cur_depth - depth_ray);
-
-			const float alpha = 1.f - __expf(-density * dt);
-			const float weight = alpha * T;
-
  	       	depth_var += weight * tmp;
-			T *= (1.f - alpha);
 
 			network_output += padded_output_width;
 			coords_in += 1;
 		}
+	}
+	if (use_coslam_sdf) {
+		T=0.f;
 	}
 
 	if (rays_depth_variance) {
@@ -4894,7 +4991,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 				coords_in -= tmp_j;
 				if (n_steps_for_sdf_free_space_loss > 0) {
 					sdf_free_space_loss /= (float)n_steps_for_sdf_free_space_loss;
-					sdf_fs_weight = 1. - (float)n_steps_for_sdf_free_space_loss / (float)compacted_numsteps;
+					sdf_fs_weight = 1.f - ((float)n_steps_for_sdf_free_space_loss / (float)compacted_numsteps);
 					//sdf_free_space_loss *= sdf_fs_weight; //may or may not be needed
 				}
 			}
@@ -4975,19 +5072,36 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		float dt = unwarp_dt(coord_in->dt);
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
-		float density = network_to_density(float(local_network_output[3]), density_activation);
-		float sdf = density;
-		if (use_volsdf){
-			density = vol_sdf_to_density(sdf, beta);
-		} else if (use_stylesdf) {
-			density = style_sdf_to_density(sdf, beta);
+
+		float weight;
+		float h;
+		float sdf;
+		float alpha;
+		float density;
+
+		if (use_coslam_sdf) {
+			sdf = network_to_density(float(local_network_output[3]), density_activation);
+			if (found_surface && (depth >(surface_d+truncation_distance))) {
+				weight = 0.f; //still need to go thru the entire pointer for loss and graidents
+			} else {
+				weight = coslam_sdf_to_weight(sdf, beta) / weight_sum;
+			}
+		} else {
+			density = network_to_density(float(local_network_output[3]), density_activation);
+			sdf = density;
+			if (use_volsdf){
+				density = vol_sdf_to_density(sdf, beta);
+			} else if (use_stylesdf) {
+				density = style_sdf_to_density(sdf, beta);
+			}
+			alpha = 1.f - __expf(-density * dt);
+			weight = alpha * T;
+			h = alpha * T + EPSILON;
+			T *= (1.f - alpha);
 		}
-		const float alpha = 1.f - __expf(-density * dt);
-		const float weight = alpha * T;
-		const float h = alpha * T + EPSILON;
+		
 		rgb_ray2 += weight * rgb;
 		depth_ray2 += weight * depth;
-		T *= (1.f - alpha);
 
 		// we know the suffix of this ray compared to where we are up to. note the suffix depends on this step's alpha as suffix = (1-alpha)*(somecolor), so dsuffix/dalpha = -somecolor = -suffix/(1-alpha)
 		const vec3 suffix = rgb_ray - rgb_ray2;
@@ -5000,23 +5114,38 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		local_dL_doutput[1] = (loss_scale_rgb / 3.0) * (dloss_by_drgb.y * network_to_rgb_derivative(local_network_output[1], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[1]));
 		local_dL_doutput[2] = (loss_scale_rgb / 3.0) * (dloss_by_drgb.z * network_to_rgb_derivative(local_network_output[2], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[2]));
 
-		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
-		float sdf_derivative=density_derivative;
-		if (use_volsdf){
-			density_derivative *= vol_sdf_to_density_derivative(sdf, beta);
-		} else if (use_stylesdf) {
-			density_derivative *= style_sdf_to_density_derivative(sdf, beta);
-		}
+		float dloss_by_dmlp;
+		float density_derivative;
+		float sdf_derivative;
+		if (use_coslam_sdf) {
+			if (found_surface && (depth >(surface_d+truncation_distance))) {
+				dloss_by_dmlp = 0.f;
+			} else {
+				float depth_supervision = loss_scale_depth * depth_loss_gradient * (depth - depth_ray) / weight_sum;
+				float rgb_supervision = loss_scale_rgb / 3.0 * dot(lg.gradient, (rgb - rgb_ray) / weight_sum);
+				sdf_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
+				float weight_derivative = coslam_sdf_to_weight_derivative(sdf, beta);
+				dloss_by_dmlp = weight_derivative * sdf_derivative * (rgb_supervision + depth_supervision);
+			}
+		} else {
+			density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
+			sdf_derivative=density_derivative;
+			if (use_volsdf){
+				density_derivative *= vol_sdf_to_density_derivative(sdf, beta);
+			} else if (use_stylesdf) {
+				density_derivative *= style_sdf_to_density_derivative(sdf, beta);
+			}
 
-		const float depth_suffix = depth_ray - depth_ray2;
-		float depth_supervision = depth_loss_gradient * (T * depth - depth_suffix);
-		if (use_custom_ray_marching) {
-			depth_supervision /= ray_dir_norm;
-		}
+			const float depth_suffix = depth_ray - depth_ray2;
+			float depth_supervision = depth_loss_gradient * (T * depth - depth_suffix);
+			if (use_custom_ray_marching) {
+				depth_supervision /= ray_dir_norm;
+			}
 
-		float dloss_by_dmlp = density_derivative * (
-			dt * ( loss_scale_rgb / 3.0 * dot(lg.gradient, T * rgb - suffix) + loss_scale_depth * depth_supervision)
-		);
+			dloss_by_dmlp = density_derivative * (
+				dt * ( loss_scale_rgb / 3.0 * dot(lg.gradient, T * rgb - suffix) + loss_scale_depth * depth_supervision)
+			);
+		}
 
 		//static constexpr float mask_supervision_strength = 1.f; // we are already 'leaking' mask information into the nerf via the random bg colors; setting this to eg between 1 and  100 encourages density towards 0 in such regions.
 		//dloss_by_dmlp += (texsamp.a<0.001f) ? mask_supervision_strength * weight : 0.f;
@@ -5858,11 +5987,14 @@ __global__ void compute_cam_gradient_train_nerf_slam(
 void Testbed::train_nerf_slam(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
 
 	//adding safeguards if when using SDF
-	if (m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_sdf_in_nerf){
+	if (m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_coslam_sdf_in_nerf||m_use_sdf_in_nerf){
 		assert(m_nerf.density_activation==ENerfActivation::None);
 	}
 	if (m_add_sdf_loss || m_add_sdf_free_space_loss){
-		assert(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_sdf_in_nerf);
+		assert(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_coslam_sdf_in_nerf||m_use_sdf_in_nerf);
+	}
+	if (m_use_coslam_sdf_in_nerf){
+		assert(!m_add_DSnerf_loss && !m_add_free_space_loss);
 	}
 
 
@@ -6521,6 +6653,7 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		    	m_nerf.training.DS_nerf_supervision_depth_sigma,
 				m_use_stylesdf_in_nerf,
 				m_use_volsdf_in_nerf,
+				m_use_coslam_sdf_in_nerf,
 				m_nerf.training.truncation_distance,
 				m_nerf.training.volsdf_beta,
 		    	m_add_sdf_loss,
@@ -6675,12 +6808,16 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 
 void Testbed::train_nerf_slam_tracking(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
 	//adding safeguards if when using SDF
-	if (m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_sdf_in_nerf){
+	if (m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_coslam_sdf_in_nerf||m_use_sdf_in_nerf){
 		assert(m_nerf.density_activation==ENerfActivation::None);
 	}
-	if (m_add_sdf_loss || m_add_sdf_free_space_loss){
-		assert(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_sdf_in_nerf);
+	if (m_add_sdf_loss_tracking || m_add_sdf_free_space_loss_tracking){
+		assert(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_coslam_sdf_in_nerf||m_use_sdf_in_nerf);
 	}
+	if (m_use_coslam_sdf_in_nerf){
+		assert(!m_add_DSnerf_loss_tracking && !m_add_free_space_loss_tracking);
+	}
+
 
 	if (m_nerf.training.indice_image_for_tracking_pose == 0) {
         // no tracking for first frame.
@@ -7095,6 +7232,7 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 		    	m_nerf.training.DS_nerf_supervision_depth_sigma,
 				m_use_stylesdf_in_nerf,
 				m_use_volsdf_in_nerf,
+				m_use_coslam_sdf_in_nerf,
 				m_nerf.training.truncation_distance,
 				m_nerf.training.volsdf_beta,
 		    	m_add_sdf_loss_tracking,
@@ -10021,7 +10159,7 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 			m_nerf_network->density(stream, density_grid_position_matrix, density_matrix, false);
 		}
 
-		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_nerf.training.volsdf_beta);
+		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta);
 		linear_kernel(ema_grid_samples_nerf, 0, stream, n_elements, decay, m_nerf.density_grid_ema_step, m_nerf.density_grid.data(), density_grid_tmp);
 
 		++m_nerf.density_grid_ema_step;
@@ -10192,7 +10330,7 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 
 		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, 
 						n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, 
-						m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_nerf.training.volsdf_beta);
+						m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta);
 		linear_kernel(ema_grid_samples_nerf, 0, stream, n_elements, decay, m_nerf.density_grid_ema_step, m_nerf.density_grid.data(), density_grid_tmp);
 
 		++m_nerf.density_grid_ema_step;
