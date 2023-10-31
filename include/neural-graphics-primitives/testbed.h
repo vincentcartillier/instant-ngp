@@ -468,6 +468,7 @@ public:
 	pybind11::array_t<float> view(bool linear, size_t view) const;
 	pybind11::array_t<float> screenshot(bool linear, bool front_buffer) const;
 	void override_sdf_training_data(pybind11::array_t<float> points, pybind11::array_t<float> distances);
+	pybind11::array_t<float> get_render_aabb_to_local();
 #endif
 
 	double calculate_iou(uint32_t n_samples=128*1024*1024, float scale_existing_results_factor=0.0, bool blocking=true, bool force_use_octree = true);

@@ -273,6 +273,21 @@ py::array_t<float> Testbed::screenshot(bool linear, bool front_buffer) const {
 }
 #endif
 
+
+py::array_t<float> Testbed::get_render_aabb_to_local() {
+	py::array_t<float> result({3,3});
+	py::buffer_info buf = result.request();
+	float* data = (float*)buf.ptr;
+	int j;
+	for (int u=0; u<3; u++){
+		for (int v=0; v<3; v++){
+			j = u*3+v;
+			data[j] = m_render_aabb_to_local[v][u];
+		}
+	}
+	return result;
+}
+
 PYBIND11_MODULE(pyngp, m) {
 	m.doc() = "Instant neural graphics primitives";
 
@@ -370,6 +385,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def(py::init<>())
 		.def(py::init<const vec3&, const vec3&>())
 		.def("center", &BoundingBox::center)
+		.def("is_empty", &BoundingBox::is_empty)
 		.def("contains", &BoundingBox::contains)
 		.def("diag", &BoundingBox::diag)
 		.def("distance", &BoundingBox::distance)
@@ -516,6 +532,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readonly("bounding_radius", &Testbed::m_bounding_radius)
 		.def_readwrite("render_aabb", &Testbed::m_render_aabb)
 		.def_readwrite("render_aabb_to_local", &Testbed::m_render_aabb_to_local)
+		.def("get_render_aabb_to_local", &Testbed::get_render_aabb_to_local)
 		.def_readwrite("aabb", &Testbed::m_aabb)
 		.def_readwrite("raw_aabb", &Testbed::m_raw_aabb)
 		.def_property("fov", &Testbed::fov, &Testbed::set_fov)
