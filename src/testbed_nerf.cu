@@ -189,6 +189,63 @@ inline __host__ __device__ float calc_dt_slaim(
 }
 
 
+inline __device__ float tanh(
+	const float x
+){
+	return (__expf(x) - __expf(-x)) / (__expf(x) + __expf(-x));
+}
+
+inline __device__ float sech(
+	const float x
+){
+	return 2 / (__expf(x) + __expf(-x));
+}
+
+inline __device__ float density_sech2(
+	const float x,
+	const float S,
+	const float sig,
+	const float mu
+){
+	return S * sech((x-mu)/sig)*sech((x-mu)/sig);
+}
+
+/*
+Computing the ray termination distribution from the sech2 function results in a biased estimates. 
+We need to compute the Expectation value and adjust the mu (mean) value of the density fcuntion sech2.
+(cf. see paper)
+*/
+inline __device__ float get_mu_for_sech(
+	const float d,
+	const float norm,
+	const float S,
+	const float sig,
+	const float int_A,
+	const float int_B
+){
+	return (d*norm - sig*sig*S*int_A) / (S*sig*int_B);
+}
+
+inline __device__ float ray_term_dist_with_sech2(
+	const float cur_depth,
+	const float target_depth,
+	const float sigma,
+	const float scale,
+	const float norm,
+	const float int_A,
+	const float int_B
+){
+	float mu = get_mu_for_sech(target_depth,norm,scale,sigma,int_A,int_B);
+	if (abs(cur_depth-mu) > (10*sigma)) {
+		return 0.;
+	} else {
+		return __expf(-(scale * sigma * tanh((cur_depth-mu)/sigma))) * density_sech2(cur_depth, scale, sigma, mu) / norm;
+	}
+}
+
+
+
+
 struct LossAndGradient {
 	vec3 loss;
 	vec3 gradient;
@@ -4552,8 +4609,13 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	const bool use_custom_ray_marching,
 	float* __restrict__ rays_depth_variance,
 	const bool add_DSnerf_loss,
+	const bool DSnerf_loss_with_sech2_dist,
 	const float DS_nerf_supervision_lambda,
 	const float DS_nerf_supervision_depth_sigma,
+	const float DS_nerf_supervision_sech2_scale,
+	const float DS_nerf_supervision_sech2_norm,
+	const float DS_nerf_supervision_sech2_int_A,
+	const float DS_nerf_supervision_sech2_int_B,
 	//SDF
 	const bool use_stylesdf,
 	const bool use_volsdf,
@@ -4902,8 +4964,12 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 				const float alpha = 1.f - __expf(-density * dt);
 
 				const float h = alpha * T;
-			
-				ds_nerf_loss -= __logf(h+EPSILON) * __expf( -( (cur_depth-target_depth)*(cur_depth-target_depth) ) / (2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma) ) * dt;
+
+				if (DSnerf_loss_with_sech2_dist) {
+					ds_nerf_loss -= __logf(h+EPSILON) * ray_term_dist_with_sech2(cur_depth, target_depth, DS_nerf_supervision_depth_sigma, DS_nerf_supervision_sech2_scale, DS_nerf_supervision_sech2_norm, DS_nerf_supervision_sech2_int_A, DS_nerf_supervision_sech2_int_B) * dt;
+				} else {
+					ds_nerf_loss -= __logf(h+EPSILON) * __expf( -( (cur_depth-target_depth)*(cur_depth-target_depth) ) / (2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma) ) * dt;
+				}
 				
 				T *= (1.f - alpha);
 
@@ -5164,13 +5230,22 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		if (add_DSnerf_loss) {
 			if (target_depth > 0.f){
 				if (n_steps_for_ds_nerf_loss>0){
-					float tmp_ds_grad = -dt*dt*T/h*__expf(-((depth-target_depth)*(depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+					float tmp_ds_grad;
+					if (DSnerf_loss_with_sech2_dist) {
+						tmp_ds_grad = -dt*dt*T/h*ray_term_dist_with_sech2(depth, target_depth, DS_nerf_supervision_depth_sigma, DS_nerf_supervision_sech2_scale, DS_nerf_supervision_sech2_norm, DS_nerf_supervision_sech2_int_A, DS_nerf_supervision_sech2_int_B);
+					} else {
+						tmp_ds_grad = -dt*dt*T/h*__expf(-((depth-target_depth)*(depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+					}
 					for (uint32_t k = j+1; k < compacted_numsteps; ++k) {
 						const NerfCoordinate* tmp_coord_in = coords_in(k);
 						const vec3 tmp_pos = unwarp_position(tmp_coord_in->pos.p, aabb);
 						float tmp_depth = distance(tmp_pos, ray_o);
 						float tmp_dt = unwarp_dt(tmp_coord_in->dt);
-						tmp_ds_grad += dt * tmp_dt * __expf(-((tmp_depth-target_depth)*(tmp_depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+						if (DSnerf_loss_with_sech2_dist) {
+							tmp_ds_grad += dt * tmp_dt * ray_term_dist_with_sech2(tmp_depth, target_depth, DS_nerf_supervision_depth_sigma, DS_nerf_supervision_sech2_scale, DS_nerf_supervision_sech2_norm, DS_nerf_supervision_sech2_int_A, DS_nerf_supervision_sech2_int_B);
+						} else {
+							tmp_ds_grad += dt * tmp_dt * __expf(-((tmp_depth-target_depth)*(tmp_depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+						}
 					}
 					//dloss_by_dmlp += loss_scale_depth * density_derivative * DS_nerf_supervision_lambda * tmp_ds_grad / (float)n_steps_for_ds_nerf_loss;
 					dloss_by_dmlp += loss_scale_depth * density_derivative * DS_nerf_supervision_lambda * tmp_ds_grad;
@@ -6649,8 +6724,13 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 				m_use_custom_ray_marching,
 				((!m_use_sdf_in_nerf) && m_nerf.training.use_depth_var_in_tracking_loss) ? rays_depth_variance.data() : nullptr,
 		    	m_add_DSnerf_loss,
+		    	m_use_DSnerf_loss_with_sech2_dist,
 		    	m_nerf.training.DS_nerf_supervision_lambda,
 		    	m_nerf.training.DS_nerf_supervision_depth_sigma,
+				m_nerf.training.DS_nerf_supervision_sech2_scale,
+				m_nerf.training.DS_nerf_supervision_sech2_norm,
+				m_nerf.training.DS_nerf_supervision_sech2_int_A,
+				m_nerf.training.DS_nerf_supervision_sech2_int_B,
 				m_use_stylesdf_in_nerf,
 				m_use_volsdf_in_nerf,
 				m_use_coslam_sdf_in_nerf,
@@ -7228,8 +7308,13 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 				m_use_custom_ray_marching,
 				((!m_use_sdf_in_nerf) && m_nerf.training.use_depth_var_in_tracking_loss) ? rays_depth_variance.data() : nullptr,
 		    	m_add_DSnerf_loss_tracking,
+		    	m_use_DSnerf_loss_with_sech2_dist,
 		    	m_nerf.training.DS_nerf_supervision_lambda_tracking,
 		    	m_nerf.training.DS_nerf_supervision_depth_sigma,
+				m_nerf.training.DS_nerf_supervision_sech2_scale,
+				m_nerf.training.DS_nerf_supervision_sech2_norm,
+				m_nerf.training.DS_nerf_supervision_sech2_int_A,
+				m_nerf.training.DS_nerf_supervision_sech2_int_B,
 				m_use_stylesdf_in_nerf,
 				m_use_volsdf_in_nerf,
 				m_use_coslam_sdf_in_nerf,

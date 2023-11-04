@@ -238,11 +238,20 @@ int main(int argc, char** argv) {
     instant_ngp.m_nerf.training.free_space_supervision_distance= 0.1 * poses_scale * scale;
 
     //settings
+    instant_ngp.m_add_DSnerf_loss = true;
+    instant_ngp.m_use_DSnerf_loss_with_sech2_dist = true;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_lambda = 1.0f;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_depth_sigma = 0.001f;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_scale = 10000.f;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_norm = 22026.4648f;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_int_A = -3876.8233442812702;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_int_B = 2202.6465749406784;
+
     instant_ngp.m_use_volsdf_in_nerf = false;
-    instant_ngp.m_use_coslam_sdf_in_nerf = true;
+    instant_ngp.m_use_coslam_sdf_in_nerf = false;
     instant_ngp.m_nerf.training.volsdf_beta = 0.1;
-    instant_ngp.m_add_sdf_loss = true;
-    instant_ngp.m_add_sdf_free_space_loss = true;
+    instant_ngp.m_add_sdf_loss = false;
+    instant_ngp.m_add_sdf_free_space_loss = false;
     instant_ngp.m_nerf.training.sdf_supervision_lambda= 100000.0;
     instant_ngp.m_nerf.training.sdf_free_space_supervision_lambda= 1.0;
 

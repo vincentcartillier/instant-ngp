@@ -789,6 +789,13 @@ public:
 			float DS_nerf_supervision_lambda = 0.0f;
 			float DS_nerf_supervision_depth_sigma = 1.0f;
 			float DS_nerf_supervision_lambda_tracking = 0.0f;
+			//sech2 related dist for ray termination	
+			float DS_nerf_supervision_sech2_scale = 1.0f;
+			float DS_nerf_supervision_sech2_norm = 1.0f;
+			// these variables are integrale values used when computing the expectation of the distribution
+			//We use the expectation value to offset the mean value in the sech2 dist (check paper)
+			float DS_nerf_supervision_sech2_int_A = 1.0f;
+			float DS_nerf_supervision_sech2_int_B = 1.0f;
 
 			float sdf_supervision_lambda = 0.0f;
 			float sdf_supervision_lambda_tracking = 0.0f;
@@ -954,6 +961,7 @@ public:
 
 	bool m_add_DSnerf_loss = false;
 	bool m_add_DSnerf_loss_tracking = false;
+	bool m_use_DSnerf_loss_with_sech2_dist = false;
 
 	bool m_add_free_space_loss = false;
 	bool m_add_free_space_loss_tracking = false;

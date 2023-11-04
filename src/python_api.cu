@@ -615,6 +615,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("add_free_space_loss", &Testbed::m_add_free_space_loss)
 		.def_readwrite("add_DS_nerf_loss", &Testbed::m_add_DSnerf_loss)
 		.def_readwrite("add_DS_nerf_loss_tracking", &Testbed::m_add_DSnerf_loss_tracking)
+		.def_readwrite("use_DS_nerf_loss_with_sech2_dist", &Testbed::m_use_DSnerf_loss_with_sech2_dist)
 		.def_readwrite("add_sdf_loss", &Testbed::m_add_sdf_loss)
 		.def_readwrite("add_sdf_loss_tracking", &Testbed::m_add_sdf_loss_tracking)
 		.def_readwrite("add_sdf_free_space_loss", &Testbed::m_add_sdf_free_space_loss)
@@ -843,7 +844,12 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("DS_nerf_supervision_lambda", &Testbed::Nerf::Training::DS_nerf_supervision_lambda)
 		.def_readwrite("DS_nerf_supervision_lambda_tracking", &Testbed::Nerf::Training::DS_nerf_supervision_lambda_tracking)
 		.def_readwrite("DS_nerf_supervision_depth_sigma", &Testbed::Nerf::Training::DS_nerf_supervision_depth_sigma)
+		.def_readwrite("DS_nerf_supervision_sech2_scale", &Testbed::Nerf::Training::DS_nerf_supervision_sech2_scale)
+		.def_readwrite("DS_nerf_supervision_sech2_norm", &Testbed::Nerf::Training::DS_nerf_supervision_sech2_norm)
+		.def_readwrite("DS_nerf_supervision_sech2_int_A", &Testbed::Nerf::Training::DS_nerf_supervision_sech2_int_A)
+		.def_readwrite("DS_nerf_supervision_sech2_int_B", &Testbed::Nerf::Training::DS_nerf_supervision_sech2_int_B)
 		;
+
 
 	py::class_<Testbed::Sdf> sdf(testbed, "Sdf");
 	sdf
