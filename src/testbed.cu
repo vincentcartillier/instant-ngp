@@ -508,13 +508,13 @@ void Testbed::set_train(bool mtrain) {
 	m_train = mtrain;
 }
 
-void Testbed::compute_and_save_marching_cubes_mesh(const fs::path& filename, ivec3 res3d , BoundingBox aabb, float thresh, bool unwrap_it) {
+void Testbed::compute_and_save_marching_cubes_mesh(const fs::path& filename, ivec3 res3d , BoundingBox aabb, float thresh, bool unwrap_it, bool use_convex_hull_mask) {
 	mat3 render_aabb_to_local = mat3(1.0f);
 	if (aabb.is_empty()) {
 		aabb = m_testbed_mode == ETestbedMode::Nerf ? m_render_aabb : m_aabb;
 		render_aabb_to_local = m_render_aabb_to_local;
 	}
-	marching_cubes(res3d, aabb, render_aabb_to_local, thresh);
+	marching_cubes(res3d, aabb, render_aabb_to_local, thresh, use_convex_hull_mask);
 	save_mesh(m_mesh.verts, m_mesh.vert_normals, m_mesh.vert_colors, m_mesh.indices, filename, unwrap_it, m_nerf.training.dataset.scale, m_nerf.training.dataset.offset);
 }
 

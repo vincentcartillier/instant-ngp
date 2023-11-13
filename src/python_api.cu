@@ -493,6 +493,7 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("aabb") = BoundingBox{},
 			py::arg("thresh") = std::numeric_limits<float>::max(),
 			py::arg("generate_uvs_for_obj_file") = false,
+			py::arg("use_convex_hull_mask") = false,
 			"Compute & save a marching cubes mesh from the current SDF or NeRF model. "
 			"Supports OBJ and PLY format. Note that UVs are only supported by OBJ files. "
 			"`thresh` is the density threshold; use 0 for SDF; 2.5 works well for NeRF. "
@@ -632,6 +633,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("keep_data_on_cpu", &Testbed::m_keep_data_on_cpu)
 		.def("send_image_to_gpu", &Testbed::send_image_to_gpu,  py::arg("image_id"), "send that image to GPU.")
 		.def("remove_image_from_gpu", &Testbed::remove_image_from_gpu,  py::arg("image_id"), "Remove that image from GPU.")
+		.def_readwrite("convex_hull_mask", &Testbed::m_convex_hull_mask)
 		//DEBUG
 		//DEBUG
 		.def("get_image_from_gpu", &Testbed::get_image_from_gpu,  py::arg("image_id"), "Get that image from GPU.")

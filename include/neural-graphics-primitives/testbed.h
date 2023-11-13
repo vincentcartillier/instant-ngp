@@ -453,7 +453,7 @@ public:
 	tcnn::GPUMemory<float> get_density_on_grid(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local); // network version (nerf or sdf)
 	tcnn::GPUMemory<float> get_sdf_gt_on_grid(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local); // sdf gt version (sdf only)
 	tcnn::GPUMemory<vec4> get_rgba_on_grid(ivec3 res3d, vec3 ray_dir, bool voxel_centers, float depth, bool density_as_alpha = false);
-	int marching_cubes(ivec3 res3d, const BoundingBox& render_aabb, const mat3& render_aabb_to_local, float thresh);
+	int marching_cubes(ivec3 res3d, const BoundingBox& render_aabb, const mat3& render_aabb_to_local, float thresh, bool use_convex_hull_mask=false);
 
 	float get_depth_from_renderbuffer(const CudaRenderBuffer& render_buffer, const vec2& uv);
 	vec3 get_3d_pos_from_pixel(const CudaRenderBuffer& render_buffer, const ivec2& focus_pixel);
@@ -510,7 +510,7 @@ public:
 
 	float compute_image_mse(bool quantize_to_byte);
 
-	void compute_and_save_marching_cubes_mesh(const fs::path& filename, ivec3 res3d = ivec3(128), BoundingBox aabb = {}, float thresh = 2.5f, bool unwrap_it = false);
+	void compute_and_save_marching_cubes_mesh(const fs::path& filename, ivec3 res3d = ivec3(128), BoundingBox aabb = {}, float thresh = 2.5f, bool unwrap_it = false, bool use_convex_hull_mask=false);
 	ivec3 compute_and_save_png_slices(const fs::path& filename, int res, BoundingBox aabb = {}, float thresh = 2.5f, float density_range = 4.f, bool flip_y_and_z_axes = false);
 
 	fs::path root_dir();
@@ -1000,6 +1000,8 @@ public:
 	void remove_image_from_gpu(const uint32_t image_id);
 
 	bool m_use_custom_ray_marching=false;
+
+	std::vector<uint8_t> m_convex_hull_mask;
 
 	// == DEBUG
 	// == DEBUG

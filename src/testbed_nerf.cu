@@ -789,6 +789,14 @@ __global__ void grid_samples_half_to_float(const uint32_t n_elements, BoundingBo
 	dst[i] = mlp;
 }
 
+__global__ void mask_density_using_convex_hull_mask(const uint32_t n_elements, float* __restrict__ density, const uint8_t* __restrict__ mask) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_elements) return;
+	if (mask[i]>0) {
+		density[i] = -1.f;
+	}
+}
+
 __global__ void ema_grid_samples_nerf(const uint32_t n_elements,
 	float decay,
 	const uint32_t count,
@@ -4171,7 +4179,7 @@ GPUMemory<vec4> Testbed::get_rgba_on_grid(ivec3 res3d, vec3 ray_dir, bool voxel_
 	return rgba;
 }
 
-int Testbed::marching_cubes(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local, float thresh) {
+int Testbed::marching_cubes(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local, float thresh, bool use_convex_hull_mask) {
 	res3d.x = next_multiple((unsigned int)res3d.x, 16u);
 	res3d.y = next_multiple((unsigned int)res3d.y, 16u);
 	res3d.z = next_multiple((unsigned int)res3d.z, 16u);
@@ -4179,8 +4187,26 @@ int Testbed::marching_cubes(ivec3 res3d, const BoundingBox& aabb, const mat3& re
 	if (thresh == std::numeric_limits<float>::max()) {
 		thresh = m_mesh.thresh;
 	}
-
+	
 	GPUMemory<float> density = get_density_on_grid(res3d, aabb, render_aabb_to_local);
+	if (use_convex_hull_mask && !m_convex_hull_mask.empty()) {
+		const uint32_t n_elements = (res3d.x*res3d.y*res3d.z);
+		assert(m_convex_hull_mask.size()==n_elements);
+		
+		GPUMemoryArena::Allocation alloc;
+		auto scratch = allocate_workspace_and_distribute<
+			uint8_t
+		>(m_stream.get(), &alloc, n_elements);
+		uint8_t* convex_hull_mask_gpu = std::get<0>(scratch);
+		CUDA_CHECK_THROW(
+ 	      cudaMemcpy(std::get<0>(scratch), m_convex_hull_mask.data(), n_elements*sizeof(uint8_t), cudaMemcpyHostToDevice)
+ 	   	);
+		linear_kernel(mask_density_using_convex_hull_mask, 0, m_stream.get(),
+			n_elements,
+			density.data(),
+			convex_hull_mask_gpu
+		);
+	}
 	marching_cubes_gpu(m_stream.get(), aabb, render_aabb_to_local, res3d, thresh, density, m_mesh.verts, m_mesh.indices);
 
 	uint32_t n_verts = (uint32_t)m_mesh.verts.size();
