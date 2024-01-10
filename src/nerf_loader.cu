@@ -72,7 +72,7 @@ __global__ void from_fullp(const uint64_t num_elements, const float* __restrict_
 }
 
 template <typename T>
-__global__ void copy_depth(const uint64_t num_elements, float* __restrict__ depth_dst, const T* __restrict__ depth_pixels, float depth_scale) {
+__global__ void copy_depth(const uint64_t num_elements, float* __restrict__ depth_dst, const T* __restrict__ depth_pixels, double depth_scale) {
 	const uint64_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= num_elements) return;
 
@@ -296,7 +296,7 @@ NerfDataset load_nerf(const std::vector<fs::path>& jsonpaths, float sharpen_amou
 		void *pixels = nullptr;
 		uint16_t *depth_pixels = nullptr;
 		Ray *rays = nullptr;
-		float depth_scale = -1.f;
+		double depth_scale = -1.f;
 	};
 	std::vector<LoadedImageInfo> images;
 	LoadedImageInfo info = {};
@@ -468,6 +468,7 @@ NerfDataset load_nerf(const std::vector<fs::path>& jsonpaths, float sharpen_amou
 
 		if (json.contains("scale")) {
 			result.scale = json["scale"];
+			result.scale_double = json["scale"];
 		}
 
 		if (json.contains("importance_sampling")) {
@@ -724,7 +725,7 @@ NerfDataset load_nerf(const std::vector<fs::path>& jsonpaths, float sharpen_amou
 	// copy / convert images to the GPU
 	for (uint32_t i = 0; i < result.n_images; ++i) {
 		const LoadedImageInfo& m = images[i];
-		result.set_training_image(i, m.res, m.pixels, m.depth_pixels, m.depth_scale * result.scale, m.image_data_on_gpu, m.image_type, EDepthDataType::UShort, sharpen_amount, m.white_transparent, m.black_transparent, m.mask_color, m.rays);
+		result.set_training_image(i, m.res, m.pixels, m.depth_pixels, m.depth_scale * result.scale_double, m.image_data_on_gpu, m.image_type, EDepthDataType::UShort, sharpen_amount, m.white_transparent, m.black_transparent, m.mask_color, m.rays);
 		CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	}
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
@@ -741,7 +742,7 @@ NerfDataset load_nerf(const std::vector<fs::path>& jsonpaths, float sharpen_amou
 	return result;
 }
 
-void NerfDataset::set_training_image(int frame_idx, const ivec2& image_resolution, const void* pixels, const void* depth_pixels, float depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount, bool white_transparent, bool black_transparent, uint32_t mask_color, const Ray *rays) {
+void NerfDataset::set_training_image(int frame_idx, const ivec2& image_resolution, const void* pixels, const void* depth_pixels, double depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount, bool white_transparent, bool black_transparent, uint32_t mask_color, const Ray *rays) {
 	if (frame_idx < 0 || frame_idx >= n_images) {
 		throw std::runtime_error{"NerfDataset::set_training_image: invalid frame index"};
 	}
@@ -759,6 +760,7 @@ void NerfDataset::set_training_image(int frame_idx, const ivec2& image_resolutio
 
 		if (depth_pixels) {
 			depth_tmp.resize(n_pixels * depth_type_size(depth_type));
+			//depth_tmp.resize(n_pixels);
 			depth_tmp.copy_from_host((uint8_t*)depth_pixels);
 			depth_pixels = depth_tmp.data();
 		}
@@ -787,7 +789,7 @@ void NerfDataset::set_training_image(int frame_idx, const ivec2& image_resolutio
 			depth_tmp.copy_from_host((uint8_t*)depth_pixels);
 			depth_pixels = depth_tmp.data();
 		}
-
+		
 		switch (depth_type) {
 			default: throw std::runtime_error{"unknown depth type in set_training_image"};
 			case EDepthDataType::UShort: linear_kernel(copy_depth<uint16_t>, 0, nullptr, n_pixels, depth_dst, (const uint16_t*)depth_pixels, depth_scale); break;
