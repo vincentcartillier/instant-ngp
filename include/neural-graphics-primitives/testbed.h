@@ -451,6 +451,7 @@ public:
 	void optimise_mesh_step(uint32_t N_STEPS);
 	void compute_mesh_vertex_colors();
 	tcnn::GPUMemory<float> get_density_on_grid(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local); // network version (nerf or sdf)
+	tcnn::GPUMemory<float> get_density_on_grid_anti_aliasing(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local); // network version (nerf or sdf)
 	tcnn::GPUMemory<float> get_sdf_gt_on_grid(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local); // sdf gt version (sdf only)
 	tcnn::GPUMemory<vec4> get_rgba_on_grid(ivec3 res3d, vec3 ray_dir, bool voxel_centers, float depth, bool density_as_alpha = false);
 	int marching_cubes(ivec3 res3d, const BoundingBox& render_aabb, const mat3& render_aabb_to_local, float thresh, bool use_convex_hull_mask=false);
@@ -1000,8 +1001,15 @@ public:
 	void remove_image_from_gpu(const uint32_t image_id);
 
 	bool m_use_custom_ray_marching=false;
+	
+	bool m_use_density_grid_in_meshing=false;
+
+	bool m_use_anti_aliasing_in_meshing=false;	
+	uint32_t m_n_elements_per_vertex_during_meshing_with_anti_aliasing=4;
 
 	std::vector<uint8_t> m_convex_hull_mask;
+
+	bool m_use_depth_median_filter=false;
 
 	// == DEBUG
 	// == DEBUG

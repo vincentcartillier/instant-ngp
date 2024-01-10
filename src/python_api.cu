@@ -634,6 +634,10 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("send_image_to_gpu", &Testbed::send_image_to_gpu,  py::arg("image_id"), "send that image to GPU.")
 		.def("remove_image_from_gpu", &Testbed::remove_image_from_gpu,  py::arg("image_id"), "Remove that image from GPU.")
 		.def_readwrite("convex_hull_mask", &Testbed::m_convex_hull_mask)
+		.def_readwrite("use_density_grid_in_meshing", &Testbed::m_use_density_grid_in_meshing)
+		.def_readwrite("use_anti_aliasing_in_meshing", &Testbed::m_use_anti_aliasing_in_meshing)
+		.def_readwrite("n_elements_per_vertex_during_meshing_with_anti_aliasing", &Testbed::m_n_elements_per_vertex_during_meshing_with_anti_aliasing)
+		.def_readwrite("use_depth_median_filter", &Testbed::m_use_depth_median_filter)
 		//DEBUG
 		//DEBUG
 		.def("get_image_from_gpu", &Testbed::get_image_from_gpu,  py::arg("image_id"), "Get that image from GPU.")

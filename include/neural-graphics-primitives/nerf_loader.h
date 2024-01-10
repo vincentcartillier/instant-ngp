@@ -107,6 +107,7 @@ struct NerfDataset {
 	size_t n_images = 0;
 	ivec2 envmap_resolution = {0, 0};
 	float scale = 1.0f;
+	double scale_double = 1.0;
 	int aabb_scale = 1;
 	uint32_t desired_resolution = 2048;
 	bool from_mitsuba = false;
@@ -121,7 +122,7 @@ struct NerfDataset {
 		return (has_light_dirs ? 3u : 0u) + n_extra_learnable_dims;
 	}
 
-	void set_training_image(int frame_idx, const ivec2& image_resolution, const void* pixels, const void* depth_pixels, float depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount = 0.f, bool white_transparent = false, bool black_transparent = false, uint32_t mask_color = 0, const Ray *rays = nullptr);
+	void set_training_image(int frame_idx, const ivec2& image_resolution, const void* pixels, const void* depth_pixels, double depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount = 0.f, bool white_transparent = false, bool black_transparent = false, uint32_t mask_color = 0, const Ray *rays = nullptr);
 	
 	vec3 nerf_direction_to_ngp(const vec3& nerf_dir) {
 		vec3 result = nerf_dir;

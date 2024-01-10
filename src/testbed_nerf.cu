@@ -63,6 +63,7 @@ inline constexpr __device__ uint32_t N_MAX_RANDOM_SAMPLES_PER_RAY() { return 16;
 // Any alpha below this is considered "invisible" and is thus culled away.
 inline constexpr __device__ float NERF_MIN_OPTICAL_THICKNESS() { return 0.01f; }
 //inline constexpr __device__ float NERF_MIN_OPTICAL_THICKNESS() { return 0.001f; }
+//inline constexpr __device__ float NERF_MIN_OPTICAL_THICKNESS() { return 0.0001f; }
 
 static constexpr uint32_t MARCH_ITER = 10000;
 
@@ -192,13 +193,23 @@ inline __host__ __device__ float calc_dt_slaim(
 inline __device__ float tanh(
 	const float x
 ){
-	return (__expf(x) - __expf(-x)) / (__expf(x) + __expf(-x));
+	if (x>10) {
+		return 1.f;
+	} else if (x < -10) {
+		return -1.f;
+	} else {
+		return (__expf(x) - __expf(-x)) / (__expf(x) + __expf(-x));
+	}
 }
 
 inline __device__ float sech(
 	const float x
 ){
-	return 2 / (__expf(x) + __expf(-x));
+	if (abs(x) > 10) {
+		return 0.f;
+	} else {
+		return 2 / (__expf(x) + __expf(-x));
+	}
 }
 
 inline __device__ float density_sech2(
@@ -239,7 +250,7 @@ inline __device__ float ray_term_dist_with_sech2(
 	if (abs(cur_depth-mu) > (10*sigma)) {
 		return 0.;
 	} else {
-		return __expf(-(scale * sigma * tanh((cur_depth-mu)/sigma))) * density_sech2(cur_depth, scale, sigma, mu) / norm;
+		return __expf(-(scale * sigma * (tanh((cur_depth-mu)/sigma) - tanh(-mu/sigma) ))) * density_sech2(cur_depth, scale, sigma, mu) / norm;
 	}
 }
 
@@ -664,6 +675,29 @@ __global__ void generate_grid_samples_nerf_uniform(ivec3 res_3d, const uint32_t 
 	out[i] = { warp_position(pos, train_aabb), warp_dt(MIN_CONE_STEPSIZE()) };
 }
 
+
+__global__ void generate_grid_samples_nerf_uniform_with_anti_aliasing(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, NerfPosition* __restrict__ out, const uint32_t n_samples_per_vertex, default_rng_t rng) {
+	// check grid_in for negative values -> must be negative on output
+	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
+	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
+	uint32_t z = threadIdx.z + blockIdx.z * blockDim.z;
+	if (x >= res_3d.x || y >= res_3d.y || z >= res_3d.z) {
+		return;
+	}
+
+	uint32_t i = x + y * res_3d.x + z * res_3d.x * res_3d.y;
+	i = i * n_samples_per_vertex;
+	vec3 pos = vec3{(float)x, (float)y, (float)z} / vec3(res_3d - ivec3(1));
+	vec3 pos_trans = transpose(render_aabb_to_local) * (pos * (render_aabb.max - render_aabb.min) + render_aabb.min);
+	out[i] = { warp_position(pos_trans, train_aabb), warp_dt(MIN_CONE_STEPSIZE()) };
+	for (uint32_t j=0; j<(n_samples_per_vertex-1); j++){
+		vec3 pos_delta = vec3{random_val(rng), random_val(rng), random_val(rng)} / vec3(res_3d - ivec3(1));
+		vec3 new_pos = pos + pos_delta;
+		new_pos = transpose(render_aabb_to_local) * (new_pos * (render_aabb.max - render_aabb.min) + render_aabb.min);
+		out[i+j] = { warp_position(new_pos, train_aabb), warp_dt(MIN_CONE_STEPSIZE()) };
+	}
+}
+
 // generate samples for uniform grid including constant ray direction
 __global__ void generate_grid_samples_nerf_uniform_dir(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, vec3 ray_dir, PitchedPtr<NerfCoordinate> network_input, const float* extra_dims, bool voxel_centers) {
 	// check grid_in for negative values -> must be negative on output
@@ -788,6 +822,38 @@ __global__ void grid_samples_half_to_float(const uint32_t n_elements, BoundingBo
 
 	dst[i] = mlp;
 }
+
+
+__global__ void grid_samples_half_to_float_with_anti_aliasing(const uint32_t n_elements, BoundingBox aabb, float* dst, const tcnn::network_precision_t* network_output, ENerfActivation density_activation, const NerfPosition* __restrict__ coords_in, const float* __restrict__ grid_in, uint32_t max_cascade, const bool use_sdf, const uint32_t n_samples_per_vertex) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_elements) return;
+
+	uint32_t k = i * n_samples_per_vertex;
+
+	// let's interpolate for marching cubes based on the raw MLP output, not the density (exponentiated) version
+	//float mlp = network_to_density(float(network_output[i * padded_output_width]), density_activation);
+	float mlp = float(network_output[k]);
+	for (uint32_t j=0; j<(n_samples_per_vertex-1); j++){
+		mlp += float(network_output[k+j]);
+	}
+	mlp /= (float)n_samples_per_vertex;
+
+	if (use_sdf) {
+		mlp = -mlp;
+	}
+
+	//TODO: /!\ check all samples within vertex
+	if (grid_in) {
+		vec3 pos = unwarp_position(coords_in[i].p, aabb);
+		float grid_density = cascaded_grid_at(pos, grid_in, mip_from_pos(pos, max_cascade));
+		if (grid_density < NERF_MIN_OPTICAL_THICKNESS()) {
+			mlp = -10000.0f;
+		}
+	}
+
+	dst[i] = mlp;
+}
+
 
 __global__ void mask_density_using_convex_hull_mask(const uint32_t n_elements, float* __restrict__ density, const uint8_t* __restrict__ mask) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -4127,7 +4193,7 @@ GPUMemory<float> Testbed::get_density_on_grid(ivec3 res3d, const BoundingBox& aa
 			mlp_out,
 			m_nerf.density_activation,
 			positions + offset,
-			nerf_mode ? m_nerf.density_grid.data() : nullptr,
+			(nerf_mode && m_use_density_grid_in_meshing)? m_nerf.density_grid.data() : nullptr,
 			m_nerf.max_cascade,
 			(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_coslam_sdf_in_nerf)
 		);
@@ -4135,6 +4201,68 @@ GPUMemory<float> Testbed::get_density_on_grid(ivec3 res3d, const BoundingBox& aa
 
 	return density;
 }
+
+
+GPUMemory<float> Testbed::get_density_on_grid_anti_aliasing(ivec3 res3d, const BoundingBox& aabb, const mat3& render_aabb_to_local) {
+	const uint32_t n_elements = (res3d.x*res3d.y*res3d.z);
+	const uint32_t n_samples_per_vertex = m_n_elements_per_vertex_during_meshing_with_anti_aliasing;
+	const uint32_t n_elements_up = n_elements * n_samples_per_vertex;
+	GPUMemory<float> density(n_elements);
+
+	const uint32_t batch_size = next_multiple(std::min(n_elements_up, 1u<<20), n_samples_per_vertex);
+	bool nerf_mode = m_testbed_mode == ETestbedMode::Nerf;
+
+	const uint32_t padded_output_width = nerf_mode ? m_nerf_network->padded_density_output_width() : m_network->padded_output_width();
+
+	GPUMemoryArena::Allocation alloc;
+	auto scratch = allocate_workspace_and_distribute<
+		NerfPosition,
+		network_precision_t
+	>(m_stream.get(), &alloc, n_elements_up, batch_size * padded_output_width);
+
+	NerfPosition* positions = std::get<0>(scratch);
+	network_precision_t* mlp_out = std::get<1>(scratch);
+
+	const dim3 threads = { 16, 8, 1 };
+	const dim3 blocks = { div_round_up((uint32_t)res3d.x, threads.x), div_round_up((uint32_t)res3d.y, threads.y), div_round_up((uint32_t)res3d.z, threads.z) };
+
+	BoundingBox unit_cube = BoundingBox{vec3(0.0f), vec3(1.0f)};
+	generate_grid_samples_nerf_uniform_with_anti_aliasing<<<blocks, threads, 0, m_stream.get()>>>(res3d, m_nerf.density_grid_ema_step, 
+	aabb, render_aabb_to_local, nerf_mode ? m_aabb : unit_cube , positions, n_samples_per_vertex, m_rng);
+
+	// Only process 1m elements at a time
+	for (uint32_t offset = 0; offset < n_elements_up; offset += batch_size) {
+		uint32_t local_batch_size = std::min(n_elements_up - offset, batch_size);
+		
+		uint32_t actual_offset = offset / n_samples_per_vertex;
+		uint32_t actual_local_batch_size = local_batch_size / n_samples_per_vertex;
+
+		GPUMatrix<network_precision_t, RM> density_matrix(mlp_out, padded_output_width, local_batch_size);
+
+		GPUMatrix<float> positions_matrix((float*)(positions + offset), sizeof(NerfPosition)/sizeof(float), local_batch_size);
+		if (nerf_mode) {
+			m_nerf_network->density(m_stream.get(), positions_matrix, density_matrix);
+		} else {
+			m_network->inference_mixed_precision(m_stream.get(), positions_matrix, density_matrix);
+		}
+		linear_kernel(grid_samples_half_to_float_with_anti_aliasing, 0, m_stream.get(),
+			actual_local_batch_size,
+			m_aabb,
+			density.data() + actual_offset , //+ axis_step * n_elements,
+			mlp_out,
+			m_nerf.density_activation,
+			positions + offset,
+			(nerf_mode && m_use_density_grid_in_meshing)? m_nerf.density_grid.data() : nullptr,
+			m_nerf.max_cascade,
+			(m_use_volsdf_in_nerf||m_use_stylesdf_in_nerf||m_use_coslam_sdf_in_nerf),
+			n_samples_per_vertex
+		);
+	}
+
+	return density;
+}
+
+
 
 GPUMemory<vec4> Testbed::get_rgba_on_grid(ivec3 res3d, vec3 ray_dir, bool voxel_centers, float depth, bool density_as_alpha) {
 	const uint32_t n_elements = (res3d.x*res3d.y*res3d.z);
@@ -4187,8 +4315,14 @@ int Testbed::marching_cubes(ivec3 res3d, const BoundingBox& aabb, const mat3& re
 	if (thresh == std::numeric_limits<float>::max()) {
 		thresh = m_mesh.thresh;
 	}
-	
-	GPUMemory<float> density = get_density_on_grid(res3d, aabb, render_aabb_to_local);
+
+	GPUMemory<float> density;
+	if (m_use_anti_aliasing_in_meshing)	{
+		density = get_density_on_grid_anti_aliasing(res3d, aabb, render_aabb_to_local);
+	} else {
+		density = get_density_on_grid(res3d, aabb, render_aabb_to_local);
+	}
+
 	if (use_convex_hull_mask && !m_convex_hull_mask.empty()) {
 		const uint32_t n_elements = (res3d.x*res3d.y*res3d.z);
 		assert(m_convex_hull_mask.size()==n_elements);
@@ -8002,6 +8136,200 @@ __global__ void convolution_gaussian_pyramid(
 }
 
 
+inline __device__ void median_filter( 
+	float* __restrict__ window, 
+	int mid, 
+	int N, 
+	bool is_even,
+	float &rec_depth, 
+	uint32_t &rec_depth_idx,
+	uint32_t* __restrict__ grad_indices
+){
+	//   Order elements (only half of them)
+   	int min;
+	for (int j = 0; j < mid; ++j) {
+   		//   Find position of minimum element
+   		min = j;
+   		for (int k = j + 1; k < N; ++k) {
+      		if (window[k] < window[min]) {
+         		min = k;
+			}
+		}
+   		//   Put found minimum element in its place
+   		const float temp = window[j];
+   		window[j] = window[min];
+   		window[min] = temp;
+		if (grad_indices) {
+			const uint32_t temp_idx = grad_indices[j];
+			grad_indices[j] = grad_indices[min];
+			grad_indices[min] = temp_idx;
+		}
+	}
+	if (is_even){
+		rec_depth = (window[mid-1]+window[mid-2])/2.f;
+	} else {
+		rec_depth = window[mid-1];
+	}
+	if (rec_depth_idx && grad_indices) {
+		//NOTE: in rec. mode we always have an odd number of values (ie 25).
+		// That's because we can always render pixels with NeRF while we sometimes have no depth sensor readings.
+		// We only want the grad on the rec. signal.
+		rec_depth_idx = grad_indices[mid-1];
+	}
+}
+
+
+
+__global__ void convolution_gaussian_pyramid_and_median_depth(
+	const uint32_t n_target_rays,
+	const uint32_t n_input_rays,
+    const uint32_t window_size_input,
+    const uint32_t window_size_output,
+    const uint32_t ray_stride_input,
+    const uint32_t ray_stride_output,
+    const float* __restrict__ kernel,
+    const uint32_t* __restrict__ existing_ray_mapping_gpu,
+    const int32_t* __restrict__ mapping_indices,
+    float* __restrict__ gt_rgbd_input,
+    float* __restrict__ rec_rgbd_input,
+    float* __restrict__ gt_rgbd_output,
+    float* __restrict__ rec_rgbd_output,
+    float* __restrict__ gradients,
+    float* __restrict__ gradients_depth
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_target_rays) { return; }
+
+    // given i compute the window indices in input array
+    // to do so first compute position of pixel at level
+    // j = i%ray_strid_at_level # get the super ray indice
+    // u = j / window_size_at_level
+    // v = j % window_size_at_level;
+    uint32_t i_prime = i / ray_stride_output;
+    uint32_t j = i % ray_stride_output;
+    uint32_t u = j / window_size_output;
+    uint32_t v = j % window_size_output;
+
+    // get corresponding indices in input array
+    // get the start index of the super ray in input
+    // a = j * ray_strid_at_prev_level
+    // u_prime = u * 2 + 2
+    // v_prime = v * 2 + 2
+    uint32_t a = i_prime * ray_stride_input;
+    uint32_t u_prime = u * 2 + 2;
+    uint32_t v_prime = v * 2 + 2;
+
+    // loop thru n = u_prime - kernel_ws/2 to u_prime + ws/2 +1
+    // loop thru m = v_prime - kernel_ws/2 to v_prime + ws/2 +1
+    // map (n,m,a) to index in input array
+    // index = a + n * window_size_at_prev_level + m
+    uint32_t cpt=0;
+	vec3 rec_rgb = vec3(0.0f);
+	vec3 gt_rgb = vec3(0.0f);
+    uint32_t index;
+    uint32_t index_map;
+    uint32_t gi;
+
+    float norm=0.f;
+    float total_add_gt_depth=0.f;
+	int num_gt_depth=0;
+
+	// needed for computing median
+	float within_kernel_gt_depths[25];
+	float within_kernel_rec_depths[25];
+	uint32_t within_kernel_gradient_indices[25];
+
+    for (uint32_t n=(u_prime-2); n<(u_prime+2+1); ++n) {
+        for (uint32_t m=(v_prime-2); m<(v_prime+2+1); ++m) {
+            index = a + n * window_size_input + m;
+            //if mapping check mapped index
+            if (existing_ray_mapping_gpu) {
+                index_map = existing_ray_mapping_gpu[index];
+            } else {
+                index_map = index;
+            }
+
+            if (mapping_indices) {
+                int32_t ray_idx = mapping_indices[index_map];
+                if (ray_idx < 0) {
+                    continue;
+                } else {
+                    index_map = ray_idx;
+                }
+            }
+
+            norm += kernel[cpt];
+
+            gt_rgb.x += kernel[cpt] * gt_rgbd_input[index_map*4+0];
+            gt_rgb.y += kernel[cpt] * gt_rgbd_input[index_map*4+1];
+            gt_rgb.z += kernel[cpt] * gt_rgbd_input[index_map*4+2];
+
+            rec_rgb.x += kernel[cpt] * rec_rgbd_input[index_map*4+0];
+            rec_rgb.y += kernel[cpt] * rec_rgbd_input[index_map*4+1];
+            rec_rgb.z += kernel[cpt] * rec_rgbd_input[index_map*4+2];
+			
+			within_kernel_rec_depths[cpt] = rec_rgbd_input[index_map*4+3];
+            
+			float tmp_gt_depth = gt_rgbd_input[index_map*4+3];
+            if (tmp_gt_depth > 0) {
+				within_kernel_gt_depths[cpt] = tmp_gt_depth;
+				num_gt_depth+=1;
+				total_add_gt_depth+=tmp_gt_depth;
+            } else {
+				within_kernel_gt_depths[cpt] = 10000.f;
+			}
+
+            gi = i * n_input_rays + index;
+            gradients[gi] = kernel[cpt];
+			
+			within_kernel_gradient_indices[cpt] = gi;
+
+            ++cpt;
+        }
+    }
+
+	// find median depth values
+	float rec_depth;
+	uint32_t rec_depth_idx;
+	median_filter(within_kernel_rec_depths, 13, 25, false, rec_depth, rec_depth_idx, within_kernel_gradient_indices);
+
+	gradients_depth[rec_depth_idx] = 1.0f;
+	
+	float gt_depth;
+	uint32_t gt_depth_idx;
+	if (num_gt_depth>2){
+		int mid = num_gt_depth/2 + 1;
+		median_filter(within_kernel_gt_depths, mid, 25, num_gt_depth%2==0, gt_depth, gt_depth_idx, nullptr);
+	} else {
+		gt_depth = total_add_gt_depth;
+		if (num_gt_depth>0) {
+			gt_depth = gt_depth / (float)num_gt_depth;
+		}
+	}
+
+
+    if (norm > 0) {
+        gt_rgb /= norm;
+        rec_rgb /= norm;
+    }
+    
+	gt_rgbd_output[i*4+0] = gt_rgb.x;
+    gt_rgbd_output[i*4+1] = gt_rgb.y;
+    gt_rgbd_output[i*4+2] = gt_rgb.z;
+    gt_rgbd_output[i*4+3] = gt_depth;
+
+    rec_rgbd_output[i*4+0] = rec_rgb.x;
+    rec_rgbd_output[i*4+1] = rec_rgb.y;
+    rec_rgbd_output[i*4+2] = rec_rgb.z;
+    rec_rgbd_output[i*4+3] = rec_depth;
+}
+
+
+
+
+
+
+
 __global__ void compute_loss_gp(
 	const uint32_t n_rays,
 	ELossType loss_type,
@@ -8137,6 +8465,36 @@ __global__ void backprop_thru_convs(
     new_partials[i*4+2] = rgb_grad.z;
     new_partials[i*4+3] = depth_grad;
 }
+
+__global__ void backprop_thru_convs_and_median(
+    const uint32_t input_n_rays,
+    const uint32_t output_n_rays, //  conv output n_rays
+    const float* __restrict__ prev_partials,
+    const float* __restrict__ gradients,
+    const float* __restrict__ gradients_depth,
+    float* __restrict__ new_partials
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= input_n_rays) { return; }
+
+	vec3 rgb_grad = vec3(0.f);
+    float depth_grad = 0;
+    for (uint32_t j=0; j<output_n_rays; ++j) {
+
+        uint32_t index = j * input_n_rays + i;
+
+        rgb_grad.x += gradients[index] * prev_partials[j*4+0];
+        rgb_grad.y += gradients[index] * prev_partials[j*4+1];
+        rgb_grad.z += gradients[index] * prev_partials[j*4+2];
+
+        depth_grad += gradients_depth[index] * prev_partials[j*4+3];
+    }
+    new_partials[i*4+0] = rgb_grad.x;
+    new_partials[i*4+1] = rgb_grad.y;
+    new_partials[i*4+2] = rgb_grad.z;
+    new_partials[i*4+3] = depth_grad;
+}
+
 
 
 
@@ -8816,6 +9174,7 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
     std::vector<tcnn::GPUMemory<float> > reconstructed_rgbd_tensors;
     std::vector<tcnn::GPUMemory<float> > reconstructed_depth_var_tensors;
     std::vector<tcnn::GPUMemory<float> > gradients_tensors;
+    std::vector<tcnn::GPUMemory<float> > gradients_tensors_depth;
     std::vector<uint32_t> dimensions;
 
     uint32_t cur_super_ray_window_size = super_ray_window_size;
@@ -8840,40 +9199,69 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
         tcnn::GPUMemory<float> new_gt_rgbd;
         tcnn::GPUMemory<float> new_rec_rgbd;
         tcnn::GPUMemory<float> gradients;
+        tcnn::GPUMemory<float> gradients_depth;
 
         new_gt_rgbd.enlarge(tmp_dim*4);
         new_rec_rgbd.enlarge(tmp_dim*4);
         gradients.enlarge(tmp_dim * cur_dim); // L1 x L2 matrix
         gradients.memset(0);
+		if (m_use_depth_median_filter) {
+			assert (!m_nerf.training.use_depth_var_in_tracking_loss);
+        	gradients_depth.enlarge(tmp_dim * cur_dim); // L1 x L2 matrix
+        	gradients_depth.memset(0);
+		}
 
         tcnn::GPUMemory<float> new_rec_depth_var;
         if (m_nerf.training.use_depth_var_in_tracking_loss) {
             new_rec_depth_var.enlarge(tmp_dim);
         }
 
-	    linear_kernel(convolution_gaussian_pyramid, 0, stream,
-            tmp_dim,
-            cur_dim,
-            cur_super_ray_window_size,
-            tmp_super_ray_window_size,
-            cur_ray_stride,
-            tmp_ray_stride,
-            kernel_gpu.data(),
-            l==0 ? existing_ray_mapping_gpu : nullptr,
-            l==0 ? mapping_indices : nullptr,
-            ground_truth_rgbd_tensors.back().data(),
-            reconstructed_rgbd_tensors.back().data(),
-            m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_tensors.back().data() : nullptr,
-            m_nerf.training.use_depth_var_in_tracking_loss ? new_rec_depth_var.data() : nullptr,
-            new_gt_rgbd.data(),
-            new_rec_rgbd.data(),
-            gradients.data()
-	    );
+		if (m_use_depth_median_filter) {
+	    	linear_kernel(convolution_gaussian_pyramid_and_median_depth, 0, stream,
+     	       tmp_dim,
+     	       cur_dim,
+     	       cur_super_ray_window_size,
+     	       tmp_super_ray_window_size,
+     	       cur_ray_stride,
+     	       tmp_ray_stride,
+     	       kernel_gpu.data(),
+     	       l==0 ? existing_ray_mapping_gpu : nullptr,
+     	       l==0 ? mapping_indices : nullptr,
+     	       ground_truth_rgbd_tensors.back().data(),
+     	       reconstructed_rgbd_tensors.back().data(),
+     	       new_gt_rgbd.data(),
+     	       new_rec_rgbd.data(),
+     	       gradients.data(),
+     	       gradients_depth.data()
+	    	);
+		} else {
+	    	linear_kernel(convolution_gaussian_pyramid, 0, stream,
+     	       tmp_dim,
+     	       cur_dim,
+     	       cur_super_ray_window_size,
+     	       tmp_super_ray_window_size,
+     	       cur_ray_stride,
+     	       tmp_ray_stride,
+     	       kernel_gpu.data(),
+     	       l==0 ? existing_ray_mapping_gpu : nullptr,
+     	       l==0 ? mapping_indices : nullptr,
+     	       ground_truth_rgbd_tensors.back().data(),
+     	       reconstructed_rgbd_tensors.back().data(),
+     	       m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_tensors.back().data() : nullptr,
+     	       m_nerf.training.use_depth_var_in_tracking_loss ? new_rec_depth_var.data() : nullptr,
+     	       new_gt_rgbd.data(),
+     	       new_rec_rgbd.data(),
+     	       gradients.data()
+	    	);
+		}
 
         ground_truth_rgbd_tensors.push_back(new_gt_rgbd);
         reconstructed_rgbd_tensors.push_back(new_rec_rgbd);
         gradients_tensors.push_back(gradients);
         dimensions.push_back(tmp_dim);
+		if (m_use_depth_median_filter) {
+        	gradients_tensors_depth.push_back(gradients_depth);
+		}
 
         if (m_nerf.training.use_depth_var_in_tracking_loss) {
             reconstructed_depth_var_tensors.push_back(new_rec_depth_var);
@@ -8949,13 +9337,25 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
         tcnn::GPUMemory<float> tmp_dL_dB;
         tmp_dL_dB.enlarge(tmp_dim * 4);
 
-        linear_kernel(backprop_thru_convs, 0, stream,
-            tmp_dim,
-            cur_dim,
-            partial_derivatives.back().data(),
-            gradients_tensors.back().data(),
-            tmp_dL_dB.data()
-        );
+		if (m_use_depth_median_filter) {
+	        linear_kernel(backprop_thru_convs_and_median, 0, stream,
+        	    tmp_dim,
+        	    cur_dim,
+        	    partial_derivatives.back().data(),
+        	    gradients_tensors.back().data(),
+        	    gradients_tensors_depth.back().data(),
+        	    tmp_dL_dB.data()
+        	);
+        	gradients_tensors_depth.pop_back();
+		} else {
+        	linear_kernel(backprop_thru_convs, 0, stream,
+        	    tmp_dim,
+        	    cur_dim,
+        	    partial_derivatives.back().data(),
+        	    gradients_tensors.back().data(),
+        	    tmp_dL_dB.data()
+        	);
+		}
 
         partial_derivatives.push_back(tmp_dL_dB);
         gradients_tensors.pop_back();

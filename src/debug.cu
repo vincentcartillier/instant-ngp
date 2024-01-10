@@ -219,9 +219,18 @@ int main(int argc, char** argv) {
     //DEBUG
     // USE ScanNet dataset - scene0106
     instant_ngp.clear_training_data();
-    instant_ngp.load_training_data("/srv/essa-lab/flash3/vcartillier3/nerf-slam/runs/ScanNet_scene0106/2/preprocessed_dataset/transforms.json");
-    float poses_scale = 1.67;
-    scale = 0.059;
+    //instant_ngp.load_training_data("/srv/essa-lab/flash3/vcartillier3/nerf-slam/runs/ScanNet_scene0106/2/preprocessed_dataset/transforms.json");
+    //float poses_scale = 1.67;
+    //scale = 0.059;
+    
+    //instant_ngp.load_training_data("/srv/essa-lab/flash3/vcartillier3/nerf-slam/data/Replica_office0/0/preprocessed_dataset/transforms_with_poses.json");
+    //float poses_scale = 4.5628604f;
+    //scale = 0.042354006f;
+    
+    instant_ngp.load_training_data("/srv/essa-lab/flash3/vcartillier3/nerf-slam/data/TUM_desk/0/preprocessed_dataset/transforms_with_poses.json");
+    float poses_scale = 2.655073380677074f;
+    scale = 0.03890145954725452f;
+
 
 
     // train mapping on first image
@@ -241,11 +250,11 @@ int main(int argc, char** argv) {
     instant_ngp.m_add_DSnerf_loss = true;
     instant_ngp.m_use_DSnerf_loss_with_sech2_dist = true;
 	instant_ngp.m_nerf.training.DS_nerf_supervision_lambda = 1.0f;
-	instant_ngp.m_nerf.training.DS_nerf_supervision_depth_sigma = 0.001f;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_depth_sigma = 0.001f * poses_scale * scale;
 	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_scale = 10000.f;
-	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_norm = 22026.4648f;
-	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_int_A = -3876.8233442812702;
-	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_int_B = 2202.6465749406784;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_norm = 0.979f;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_int_A = -0.41449403058974993;
+	instant_ngp.m_nerf.training.DS_nerf_supervision_sech2_int_B = 0.5108077790379647;
 
     instant_ngp.m_use_volsdf_in_nerf = false;
     instant_ngp.m_use_coslam_sdf_in_nerf = false;
@@ -302,17 +311,23 @@ int main(int argc, char** argv) {
 
     // train tracking on second image
     tlog::info()<<" Start Tracking";
+    instant_ngp.m_use_depth_median_filter=true;
     instant_ngp.m_nerf.training.indice_image_for_tracking_pose = 1;
     instant_ngp.m_nerf.training.extrinsic_learning_rate_pos = 0.0005;
     instant_ngp.m_nerf.training.extrinsic_learning_rate_rot = 0.001;
     // instant_ngp.m_nerf.training.track_loss_type = ngp.LossType.L2;
     // instant_ngp.m_nerf.training.track_depth_loss_type = ngp.LossType.L1
-    instant_ngp.m_nerf.training.depth_supervision_lambda = 0.0f;
-    instant_ngp.m_tracking_mode=0;
+    instant_ngp.m_nerf.training.depth_supervision_lambda = 1.0f;
+    instant_ngp.m_tracking_mode=1;
 
+    instant_ngp.m_train = true;
+    instant_ngp.m_train_encoding = false;
+    instant_ngp.m_train_network = false;
+    instant_ngp.m_tracking_gaussian_pyramid_level = 2;
+ 
     batch_size=256000 * 5;
 
-    for (uint32_t i=0; i<1000; ++i) {
+    for (uint32_t i=0; i<100; ++i) {
         instant_ngp.track(batch_size);
     }
 
