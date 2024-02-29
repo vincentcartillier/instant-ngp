@@ -8526,8 +8526,14 @@ __global__ void compute_gradient_gp(
 	const uint32_t* __restrict__ super_ray_counter_depth,
 	float* __restrict__ sample_outputs,
 	const bool add_DSnerf_loss,
+	const bool DSnerf_loss_with_sech2_dist,
 	const float DS_nerf_supervision_lambda,
 	const float DS_nerf_supervision_depth_sigma,
+	const float DS_nerf_supervision_sech2_scale,
+	const float DS_nerf_supervision_sech2_norm,
+	const float DS_nerf_supervision_sech2_int_A,
+	const float DS_nerf_supervision_sech2_int_B,
+
 	const bool add_free_space_loss,
 	const float free_space_supervision_lambda,
 	const float free_space_supervision_distance
@@ -8698,13 +8704,22 @@ __global__ void compute_gradient_gp(
 		if (add_DSnerf_loss) {
 			if (depth_ray_target > 0.f){
 					float target_depth = depth_ray_target;
-					float tmp_ds_grad = -dt*dt*T/h*__expf(-((depth-target_depth)*(depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+					float tmp_ds_grad;
+					if (DSnerf_loss_with_sech2_dist) {
+						tmp_ds_grad = -dt*dt*T/h*ray_term_dist_with_sech2(depth, target_depth, DS_nerf_supervision_depth_sigma, DS_nerf_supervision_sech2_scale, DS_nerf_supervision_sech2_norm, DS_nerf_supervision_sech2_int_A, DS_nerf_supervision_sech2_int_B);
+					} else {
+						tmp_ds_grad = -dt*dt*T/h*__expf(-((depth-target_depth)*(depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+					}
 					for (uint32_t k = j+1; k < numsteps_compact; ++k) {
 						const NerfCoordinate* tmp_coord_in = coords_in(k);
 						const vec3 tmp_pos = unwarp_position(tmp_coord_in->pos.p, aabb);
 						float tmp_depth = distance(tmp_pos, ray_o);
 						float tmp_dt = unwarp_dt(tmp_coord_in->dt);
-						tmp_ds_grad += dt * tmp_dt * __expf(-((tmp_depth-target_depth)*(tmp_depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+						if (DSnerf_loss_with_sech2_dist) {
+							tmp_ds_grad += dt * tmp_dt * ray_term_dist_with_sech2(tmp_depth, target_depth, DS_nerf_supervision_depth_sigma, DS_nerf_supervision_sech2_scale, DS_nerf_supervision_sech2_norm, DS_nerf_supervision_sech2_int_A, DS_nerf_supervision_sech2_int_B);
+						} else {
+							tmp_ds_grad += dt * tmp_dt * __expf(-((tmp_depth-target_depth)*(tmp_depth-target_depth))/(2*DS_nerf_supervision_depth_sigma*DS_nerf_supervision_depth_sigma));
+						}
 					}
 					dloss_by_dmlp += loss_scale_depth_DS * density_derivative * DS_nerf_supervision_lambda * tmp_ds_grad;
 			}
@@ -9410,8 +9425,13 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		super_ray_counter_depth,
 		m_debug ? sample_outputs.data(): nullptr,
 		m_add_DSnerf_loss_tracking,
+		m_use_DSnerf_loss_with_sech2_dist,
 		m_nerf.training.DS_nerf_supervision_lambda_tracking,
 		m_nerf.training.DS_nerf_supervision_depth_sigma,
+		m_nerf.training.DS_nerf_supervision_sech2_scale,
+		m_nerf.training.DS_nerf_supervision_sech2_norm,
+		m_nerf.training.DS_nerf_supervision_sech2_int_A,
+		m_nerf.training.DS_nerf_supervision_sech2_int_B,
 		m_add_free_space_loss_tracking,
 		m_nerf.training.free_space_supervision_lambda_tracking,
 		m_nerf.training.free_space_supervision_distance
@@ -10871,7 +10891,8 @@ void Testbed::train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool
 			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.sharpness_grid.data(), 0, m_nerf.training.sharpness_grid.get_bytes(), stream));
 		}
 
-		if ((m_training_step == 0) & (m_ba_step == 0)) {
+		//if ((m_training_step == 0) & (m_ba_step == 0)) {
+		if (m_training_step == 0) {
 			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.sharpness_grid.data(), 0, m_nerf.training.sharpness_grid.get_bytes(), stream));
 		} else {
 			linear_kernel(decay_sharpness_grid_nerf, 0, stream, m_nerf.training.sharpness_grid.size(), 0.95f, m_nerf.training.sharpness_grid.data());
@@ -10953,7 +10974,8 @@ void Testbed::train_nerf_slam_bundle_adjustment(uint32_t target_batch_size, bool
 
 	m_trainer->optimizer_step(stream, LOSS_SCALE);
 
-	++m_ba_step;
+	//++m_ba_step;
+	++m_training_step;
 
 	if (envmap_gradient) {
 		m_envmap.trainer->optimizer_step(stream, LOSS_SCALE);
@@ -11595,6 +11617,7 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
     std::vector<tcnn::GPUMemory<float> > reconstructed_rgbd_tensors;
     std::vector<tcnn::GPUMemory<float> > reconstructed_depth_var_tensors;
     std::vector<tcnn::GPUMemory<float> > gradients_tensors;
+    std::vector<tcnn::GPUMemory<float> > gradients_tensors_depth;
     std::vector<uint32_t> dimensions;
 
     uint32_t cur_super_ray_window_size = super_ray_window_size;
@@ -11619,40 +11642,70 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
         tcnn::GPUMemory<float> new_gt_rgbd;
         tcnn::GPUMemory<float> new_rec_rgbd;
         tcnn::GPUMemory<float> gradients;
+        tcnn::GPUMemory<float> gradients_depth;
 
         new_gt_rgbd.enlarge(tmp_dim*4);
         new_rec_rgbd.enlarge(tmp_dim*4);
         gradients.enlarge(tmp_dim * cur_dim); // L1 x L2 matrix
         gradients.memset(0);
+		if (m_use_depth_median_filter) {
+			assert (!m_nerf.training.use_depth_var_in_tracking_loss);
+        	gradients_depth.enlarge(tmp_dim * cur_dim); // L1 x L2 matrix
+        	gradients_depth.memset(0);
+		}
 
         tcnn::GPUMemory<float> new_rec_depth_var;
         if (m_nerf.training.use_depth_var_in_tracking_loss) {
             new_rec_depth_var.enlarge(tmp_dim);
         }
 
-	    linear_kernel(convolution_gaussian_pyramid, 0, stream,
-            tmp_dim,
-            cur_dim,
-            cur_super_ray_window_size,
-            tmp_super_ray_window_size,
-            cur_ray_stride,
-            tmp_ray_stride,
-            kernel_gpu.data(),
-            l==0 ? existing_ray_mapping_gpu : nullptr,
-            l==0 ? mapping_indices : nullptr,
-            ground_truth_rgbd_tensors.back().data(),
-            reconstructed_rgbd_tensors.back().data(),
-            m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_tensors.back().data() : nullptr,
-            m_nerf.training.use_depth_var_in_tracking_loss ? new_rec_depth_var.data() : nullptr,
-            new_gt_rgbd.data(),
-            new_rec_rgbd.data(),
-            gradients.data()
-	    );
+
+		if (m_use_depth_median_filter) {
+	    	linear_kernel(convolution_gaussian_pyramid_and_median_depth, 0, stream,
+     	       tmp_dim,
+     	       cur_dim,
+     	       cur_super_ray_window_size,
+     	       tmp_super_ray_window_size,
+     	       cur_ray_stride,
+     	       tmp_ray_stride,
+     	       kernel_gpu.data(),
+     	       l==0 ? existing_ray_mapping_gpu : nullptr,
+     	       l==0 ? mapping_indices : nullptr,
+     	       ground_truth_rgbd_tensors.back().data(),
+     	       reconstructed_rgbd_tensors.back().data(),
+     	       new_gt_rgbd.data(),
+     	       new_rec_rgbd.data(),
+     	       gradients.data(),
+     	       gradients_depth.data()
+	    	);
+		} else {
+	    	linear_kernel(convolution_gaussian_pyramid, 0, stream,
+     	       tmp_dim,
+     	       cur_dim,
+     	       cur_super_ray_window_size,
+     	       tmp_super_ray_window_size,
+     	       cur_ray_stride,
+     	       tmp_ray_stride,
+     	       kernel_gpu.data(),
+     	       l==0 ? existing_ray_mapping_gpu : nullptr,
+     	       l==0 ? mapping_indices : nullptr,
+     	       ground_truth_rgbd_tensors.back().data(),
+     	       reconstructed_rgbd_tensors.back().data(),
+     	       m_nerf.training.use_depth_var_in_tracking_loss ? reconstructed_depth_var_tensors.back().data() : nullptr,
+     	       m_nerf.training.use_depth_var_in_tracking_loss ? new_rec_depth_var.data() : nullptr,
+     	       new_gt_rgbd.data(),
+     	       new_rec_rgbd.data(),
+     	       gradients.data()
+	    	);
+		}
 
         ground_truth_rgbd_tensors.push_back(new_gt_rgbd);
         reconstructed_rgbd_tensors.push_back(new_rec_rgbd);
         gradients_tensors.push_back(gradients);
         dimensions.push_back(tmp_dim);
+		if (m_use_depth_median_filter) {
+        	gradients_tensors_depth.push_back(gradients_depth);
+		}
 
         if (m_nerf.training.use_depth_var_in_tracking_loss) {
             reconstructed_depth_var_tensors.push_back(new_rec_depth_var);
@@ -11699,13 +11752,25 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
         tcnn::GPUMemory<float> tmp_dL_dB;
         tmp_dL_dB.enlarge(tmp_dim * 4);
 
-        linear_kernel(backprop_thru_convs, 0, stream,
-            tmp_dim,
-            cur_dim,
-            partial_derivatives.back().data(),
-            gradients_tensors.back().data(),
-            tmp_dL_dB.data()
-        );
+		if (m_use_depth_median_filter) {
+	        linear_kernel(backprop_thru_convs_and_median, 0, stream,
+        	    tmp_dim,
+        	    cur_dim,
+        	    partial_derivatives.back().data(),
+        	    gradients_tensors.back().data(),
+        	    gradients_tensors_depth.back().data(),
+        	    tmp_dL_dB.data()
+        	);
+        	gradients_tensors_depth.pop_back();
+		} else {
+			linear_kernel(backprop_thru_convs, 0, stream,
+				tmp_dim,
+				cur_dim,
+				partial_derivatives.back().data(),
+				gradients_tensors.back().data(),
+				tmp_dL_dB.data()
+			);
+		}
 
         partial_derivatives.push_back(tmp_dL_dB);
         gradients_tensors.pop_back();
@@ -11749,8 +11814,13 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		super_ray_counter_depth,
 		nullptr,
 		m_add_DSnerf_loss,
+		m_use_DSnerf_loss_with_sech2_dist,
 		m_nerf.training.DS_nerf_supervision_lambda,
 		m_nerf.training.DS_nerf_supervision_depth_sigma,
+		m_nerf.training.DS_nerf_supervision_sech2_scale,
+		m_nerf.training.DS_nerf_supervision_sech2_norm,
+		m_nerf.training.DS_nerf_supervision_sech2_int_A,
+		m_nerf.training.DS_nerf_supervision_sech2_int_B,
 		m_add_free_space_loss,
 		m_nerf.training.free_space_supervision_lambda,
 		m_nerf.training.free_space_supervision_distance

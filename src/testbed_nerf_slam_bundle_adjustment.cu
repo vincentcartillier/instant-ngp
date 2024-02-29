@@ -66,8 +66,10 @@ void Testbed::bundle_adjustment(uint32_t batch_size) {
 		reset_accumulation(false, false);
 	}
 
-	uint32_t n_prep_to_skip = m_testbed_mode == ETestbedMode::Nerf ? tcnn::clamp(m_ba_step / 16u, 1u, 16u) : 1u;
-	if ((m_ba_step % n_prep_to_skip == 0) || (m_reset_prep_nerf_mapping) ) {
+	//uint32_t n_prep_to_skip = m_testbed_mode == ETestbedMode::Nerf ? tcnn::clamp(m_ba_step / 16u, 1u, 16u) : 1u;
+	//if ((m_ba_step % n_prep_to_skip == 0) || (m_reset_prep_nerf_mapping) ) {
+	uint32_t n_prep_to_skip = m_testbed_mode == ETestbedMode::Nerf ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;
+	if ((m_training_step % n_prep_to_skip == 0) || (m_reset_prep_nerf_mapping) ) {
 		auto start = std::chrono::steady_clock::now();
 		ScopeGuard timing_guard{[&]() {
 			m_training_prep_ms.update(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count() / n_prep_to_skip);
@@ -93,7 +95,8 @@ void Testbed::bundle_adjustment(uint32_t batch_size) {
 	m_optimizer->update_hyperparams(m_network_config["optimizer"]);
 
 	//bool get_loss_scalar = true;
-	bool get_loss_scalar = m_ba_step % 16 == 0;
+	//bool get_loss_scalar = m_ba_step % 16 == 0;
+	bool get_loss_scalar = m_training_step % 16 == 0;
 
 	{
 		auto start = std::chrono::steady_clock::now();
