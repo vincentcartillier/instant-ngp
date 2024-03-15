@@ -638,6 +638,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("use_anti_aliasing_in_meshing", &Testbed::m_use_anti_aliasing_in_meshing)
 		.def_readwrite("n_elements_per_vertex_during_meshing_with_anti_aliasing", &Testbed::m_n_elements_per_vertex_during_meshing_with_anti_aliasing)
 		.def_readwrite("use_depth_median_filter", &Testbed::m_use_depth_median_filter)
+		.def_readwrite("do_multi_pos_encoding", &Testbed::m_do_multi_pos_encoding)
 		//DEBUG
 		//DEBUG
 		.def("get_image_from_gpu", &Testbed::get_image_from_gpu,  py::arg("image_id"), "Get that image from GPU.")

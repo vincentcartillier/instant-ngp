@@ -3711,10 +3711,16 @@ void Testbed::reset_network(bool clear_density_grid) {
 		uint32_t n_dir_dims = 3;
 		uint32_t n_extra_dims = m_nerf.training.dataset.n_extra_dims();
 
+
+		uint32_t n_extra_pos_dim=0;
+		if (m_do_multi_pos_encoding){
+			n_extra_pos_dim=4;
+		}
+
 		// Instantiate an additional model for each auxiliary GPU
 		for (auto& device : m_devices) {
 			device.set_nerf_network(std::make_shared<NerfNetwork<precision_t>>(
-				dims.n_pos,
+				dims.n_pos+n_extra_pos_dim,
 				n_dir_dims,
 				n_extra_dims,
 				dims.n_pos + 1, // The offset of 1 comes from the dt member variable of NerfCoordinate. HACKY
@@ -3731,7 +3737,7 @@ void Testbed::reset_network(bool clear_density_grid) {
 		n_encoding_params = m_encoding->n_params() + m_nerf_network->dir_encoding()->n_params();
 
 		tlog::info()
-			<< "Density model: " << dims.n_pos
+			<< "Density model: " << dims.n_pos+n_extra_pos_dim
 			<< "--[" << std::string(encoding_config["otype"])
 			<< "]-->" << m_nerf_network->pos_encoding()->padded_output_width()
 			<< "--[" << std::string(network_config["otype"])

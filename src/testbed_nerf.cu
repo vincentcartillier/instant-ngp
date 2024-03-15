@@ -1709,7 +1709,8 @@ __global__ void generate_training_samples_nerf(
 	const float* __restrict__ cdf_img,
 	const ivec2 cdf_res,
 	const float* __restrict__ extra_dims_gpu,
-	uint32_t n_extra_dims
+	uint32_t n_extra_dims,
+	const bool use_pos_instead_of_dir
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -1820,7 +1821,11 @@ __global__ void generate_training_samples_nerf(
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid_occupied_at(pos, density_grid, mip)) {
-			coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			if (use_pos_instead_of_dir){
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			} else {
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			}
 			++j;
 			t += dt;
 		} else {
@@ -3902,7 +3907,8 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, Testbed::NerfCounters&
 			sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
 			m_nerf.training.error_map.cdf_resolution,
 			m_nerf.training.extra_dims_gpu.data(),
-			m_nerf_network->n_extra_dims()
+			m_nerf_network->n_extra_dims(),
+			m_do_multi_pos_encoding
 		);
 
 
@@ -4511,7 +4517,8 @@ __global__ void generate_training_samples_nerf_slam(
 	const uint32_t n_samples_for_regular_sampling,
 	float* __restrict__ xy_coords_sample, //DEBUG
 	uint32_t* __restrict__ img_id_sample,  //DEBUG
-	float* __restrict__ sample_z_vals //DEBUG
+	float* __restrict__ sample_z_vals, //DEBUG
+	const bool use_pos_instead_of_dir
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -4675,7 +4682,11 @@ __global__ void generate_training_samples_nerf_slam(
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid){
 			if (density_grid_occupied_at(pos, density_grid, mip)) {
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				if (use_pos_instead_of_dir){
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				} else {
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				}
 				if (sample_z_vals) {
 					float cur_z = dot(cam_fwd, pos - ray_o);
 					sample_z_vals[base+j] = cur_z;
@@ -4686,7 +4697,11 @@ __global__ void generate_training_samples_nerf_slam(
 				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
 			}
 		} else {
-			coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			if (use_pos_instead_of_dir){
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			} else {
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			}
 			if (sample_z_vals) {
 				float cur_z = dot(cam_fwd, pos - ray_o);
 				sample_z_vals[base+j] = cur_z;
@@ -6680,7 +6695,8 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 			m_nerf.training.n_samples_for_regular_sampling,
 			m_debug ? xy_coords_sample.data(): nullptr,
 			m_debug ? img_id_sample.data(): nullptr,
-			m_debug ? sample_z_vals.data(): nullptr
+			m_debug ? sample_z_vals.data(): nullptr,
+			m_do_multi_pos_encoding
 		);
 
 	//DEBUG
@@ -7300,7 +7316,8 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 			m_nerf.training.n_samples_for_regular_sampling,
 			nullptr,
 			nullptr,
-			nullptr
+			nullptr,
+			m_do_multi_pos_encoding
 		);
 
 
@@ -7625,7 +7642,8 @@ __global__ void generate_training_samples_for_tracking_gp(
 	const bool use_depth_guided_sampling, //only available in custom ray marching
 	const float dt_for_regular_sampling,
 	const float dt_for_depth_guided_sampling,
-	const float truncation_distance_for_depth_guided_sampling
+	const float truncation_distance_for_depth_guided_sampling,
+	const bool use_pos_instead_of_dir
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -7781,7 +7799,11 @@ __global__ void generate_training_samples_for_tracking_gp(
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid) {
 			if (density_grid_occupied_at(pos, density_grid, mip)) {
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				if (use_pos_instead_of_dir){
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				} else {
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				}
 				if (sample_z_vals) {
 					float cur_z = dot(cam_fwd, pos - ray_o);
 					sample_z_vals[base+j] = cur_z;
@@ -7792,7 +7814,11 @@ __global__ void generate_training_samples_for_tracking_gp(
 				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
 			}
 		} else {
-			coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			if (use_pos_instead_of_dir){
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			} else {
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			}
 			if (sample_z_vals) {
 				float cur_z = dot(cam_fwd, pos - ray_o);
 				sample_z_vals[base+j] = cur_z;
@@ -9094,7 +9120,8 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		m_use_depth_guided_sampling,
 		m_nerf.training.dt_for_regular_sampling,
 		m_nerf.training.dt_for_depth_guided_sampling,
-		m_nerf.training.truncation_distance_for_depth_guided_sampling
+		m_nerf.training.truncation_distance_for_depth_guided_sampling,
+		m_do_multi_pos_encoding
 	);
 
 	//NOTE: some checks on the # ray sampled
@@ -9591,7 +9618,8 @@ __global__ void generate_training_samples_nerf_slam_mgl(
 	uint32_t n_extra_dims,
 	const uint32_t* __restrict__ idx_images_for_mapping,
 	const ivec2 sample_away_from_border_margin,
-	const float max_grid_level
+	const float max_grid_level,
+	const bool use_pos_instead_of_dir
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -9689,7 +9717,11 @@ __global__ void generate_training_samples_nerf_slam_mgl(
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid_occupied_at(pos, density_grid, mip)) {
-			coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			if (use_pos_instead_of_dir){
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			} else {
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+			}
 			++j;
 			t += dt;
 		} else {
@@ -10202,7 +10234,8 @@ void Testbed::train_nerf_slam_tracking_step_mgl_coarse_to_fine(uint32_t target_b
 			m_nerf_network->n_extra_dims(),
 			indice_image_for_tracking_pose_gpu.data(),
 			sample_away_from_border_margin,
-			m_tracking_max_grid_level
+			m_tracking_max_grid_level,
+			m_do_multi_pos_encoding
 		);
 
 
@@ -11523,7 +11556,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		m_use_depth_guided_sampling,
 		m_nerf.training.dt_for_regular_sampling,
 		m_nerf.training.dt_for_depth_guided_sampling,
-		m_nerf.training.truncation_distance_for_depth_guided_sampling
+		m_nerf.training.truncation_distance_for_depth_guided_sampling,
+		m_do_multi_pos_encoding
 	);
 
 
@@ -12024,7 +12058,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t
 			m_nerf_network->n_extra_dims(),
     		m_nerf.training.idx_images_for_mapping_gpu.data(),
 			sample_away_from_border_margin,
-			m_tracking_max_grid_level
+			m_tracking_max_grid_level,
+			m_do_multi_pos_encoding
 		);
 
 	//DEBUG

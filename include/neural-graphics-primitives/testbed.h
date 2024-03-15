@@ -1004,6 +1004,12 @@ public:
 	
 	bool m_use_density_grid_in_meshing=false;
 
+	// this allows to concat a frequency/OneBlob encoding to a grid encoding
+	// This is done by repeating the xyz position twice in the input matrix
+	// We basically replace the dir encoding with the xyz -> then need an appropriate PosEncoding
+	// And an empty dir encoding (since no dir info is used)
+	bool m_do_multi_pos_encoding=false;
+
 	bool m_use_anti_aliasing_in_meshing=false;	
 	uint32_t m_n_elements_per_vertex_during_meshing_with_anti_aliasing=4;
 
