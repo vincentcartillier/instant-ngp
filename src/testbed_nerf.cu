@@ -46,15 +46,18 @@ using namespace tcnn;
 NGP_NAMESPACE_BEGIN
 
 inline constexpr __device__ float NERF_RENDERING_NEAR_DISTANCE() { return 0.05f; }
-inline constexpr __device__ uint32_t NERF_STEPS() { return 1024; } // finest number of steps per unit length
-//inline constexpr __device__ uint32_t NERF_STEPS() { return 256; } // finest number of steps per unit length
+//inline constexpr __device__ uint32_t NERF_STEPS() { return 1024; } // finest number of steps per unit length
+inline __host__ __device__ uint32_t NERF_STEPS(const uint32_t nerf_steps) { return nerf_steps; } // finest number of steps per unit length
 inline constexpr __device__ uint32_t NERF_CASCADES() { return 8; }
 
 inline constexpr __device__ float SQRT3() { return 1.73205080757f; }
-inline constexpr __device__ float STEPSIZE() { return (SQRT3() / NERF_STEPS()); } // for nerf raymarch
-inline constexpr __device__ float MIN_CONE_STEPSIZE() { return STEPSIZE(); }
+//inline constexpr __device__ float STEPSIZE() { return (SQRT3() / NERF_STEPS()); } // for nerf raymarch
+inline __host__ __device__ float STEPSIZE(const uint32_t nerf_steps) { return (SQRT3() / NERF_STEPS(nerf_steps)); } // for nerf raymarch
+//inline constexpr __device__ float MIN_CONE_STEPSIZE() { return STEPSIZE(); }
+inline __host__ __device__ float MIN_CONE_STEPSIZE(const uint32_t nerf_steps) { return STEPSIZE(nerf_steps); }
 // Maximum step size is the width of the coarsest gridsize cell.
-inline constexpr __device__ float MAX_CONE_STEPSIZE() { return STEPSIZE() * (1<<(NERF_CASCADES()-1)) * NERF_STEPS() / NERF_GRIDSIZE(); }
+//inline constexpr __device__ float MAX_CONE_STEPSIZE() { return STEPSIZE() * (1<<(NERF_CASCADES()-1)) * NERF_STEPS() / NERF_GRIDSIZE(); }
+inline __host__ __device__ float MAX_CONE_STEPSIZE(const uint32_t nerf_steps) { return STEPSIZE(nerf_steps) * (1<<(NERF_CASCADES()-1)) * NERF_STEPS(nerf_steps) / NERF_GRIDSIZE(); }
 
 // Used to index into the PRNG stream. Must be larger than the number of
 // samples consumed by any given training ray.
@@ -91,56 +94,57 @@ inline __host__ __device__ float calc_cone_angle(float cosine, const vec2& focal
 	return cone_angle_constant;
 }
 
-inline __host__ __device__ float to_stepping_space(float t, float cone_angle) {
+inline __host__ __device__ float to_stepping_space(float t, float cone_angle, const uint32_t nerf_steps) {
 	if (cone_angle <= 1e-5f) {
-		return t / MIN_CONE_STEPSIZE();
+		return t / MIN_CONE_STEPSIZE(nerf_steps);
 	}
 
 	float log1p_c = logf(1.0f + cone_angle);
 
-	float a = (logf(MIN_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
-	float b = (logf(MAX_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
+	float a = (logf(MIN_CONE_STEPSIZE(nerf_steps)) - logf(log1p_c)) / log1p_c;
+	float b = (logf(MAX_CONE_STEPSIZE(nerf_steps)) - logf(log1p_c)) / log1p_c;
 
 	float at = expf(a * log1p_c);
 	float bt = expf(b * log1p_c);
 
 	if (t <= at) {
-		return (t - at) / MIN_CONE_STEPSIZE() + a;
+		return (t - at) / MIN_CONE_STEPSIZE(nerf_steps) + a;
 	} else if (t <= bt) {
 		return logf(t) / log1p_c;
 	} else {
-		return (t - bt) / MAX_CONE_STEPSIZE() + b;
+		return (t - bt) / MAX_CONE_STEPSIZE(nerf_steps) + b;
 	}
 }
 
-inline __host__ __device__ float from_stepping_space(float n, float cone_angle) {
+//TODO: add nerf_steps to the below functions on all calls !!!!
+inline __host__ __device__ float from_stepping_space(float n, float cone_angle, const uint32_t nerf_steps) {
 	if (cone_angle <= 1e-5f) {
-		return n * MIN_CONE_STEPSIZE();
+		return n * MIN_CONE_STEPSIZE(nerf_steps);
 	}
 
 	float log1p_c = logf(1.0f + cone_angle);
 
-	float a = (logf(MIN_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
-	float b = (logf(MAX_CONE_STEPSIZE()) - logf(log1p_c)) / log1p_c;
+	float a = (logf(MIN_CONE_STEPSIZE(nerf_steps)) - logf(log1p_c)) / log1p_c;
+	float b = (logf(MAX_CONE_STEPSIZE(nerf_steps)) - logf(log1p_c)) / log1p_c;
 
 	float at = expf(a * log1p_c);
 	float bt = expf(b * log1p_c);
 
 	if (n <= a) {
-		return (n - a) * MIN_CONE_STEPSIZE() + at;
+		return (n - a) * MIN_CONE_STEPSIZE(nerf_steps) + at;
 	} else if (n <= b) {
 		return expf(n * log1p_c);
 	} else {
-		return (n - b) * MAX_CONE_STEPSIZE() + bt;
+		return (n - b) * MAX_CONE_STEPSIZE(nerf_steps) + bt;
 	}
 }
 
-inline __host__ __device__ float advance_n_steps(float t, float cone_angle, float n) {
-	return from_stepping_space(to_stepping_space(t, cone_angle) + n, cone_angle);
+inline __host__ __device__ float advance_n_steps(float t, float cone_angle, float n, const uint32_t nerf_steps) {
+	return from_stepping_space(to_stepping_space(t, cone_angle, nerf_steps) + n, cone_angle, nerf_steps);
 }
 
-inline __host__ __device__ float calc_dt(float t, float cone_angle) {
-	return advance_n_steps(t, cone_angle, 1.0f) - t;
+inline __host__ __device__ float calc_dt(float t, float cone_angle, const uint32_t nerf_steps) {
+	return advance_n_steps(t, cone_angle, 1.0f, nerf_steps) - t;
 }
 
 inline __host__ __device__ float calc_dt_with_depth_guided_sampling(
@@ -149,7 +153,8 @@ inline __host__ __device__ float calc_dt_with_depth_guided_sampling(
 	const float depth, 
 	const float target_depth, 
 	const float dt_for_depth_guided_sampling, 
-	const float truncation_distance_for_depth_guided_sampling
+	const float truncation_distance_for_depth_guided_sampling,
+	const uint32_t nerf_steps
 ) {
 	float dt;
 	if ((depth >= (target_depth - truncation_distance_for_depth_guided_sampling)) &
@@ -157,7 +162,7 @@ inline __host__ __device__ float calc_dt_with_depth_guided_sampling(
 		(target_depth > 0.)){
 		dt = dt_for_depth_guided_sampling;
 	} else {
-		dt = calc_dt(t, cone_angle);
+		dt = calc_dt(t, cone_angle, nerf_steps);
 	}
 	return dt;
 }
@@ -358,16 +363,16 @@ inline __device__ float distance_to_next_voxel(const vec3& pos, const vec3& dir,
 	return fmaxf(t / res, 0.0f);
 }
 
-inline __device__ float advance_to_next_voxel(float t, float cone_angle, const vec3& pos, const vec3& dir, const vec3& idir, uint32_t mip) {
+inline __device__ float advance_to_next_voxel(float t, float cone_angle, const vec3& pos, const vec3& dir, const vec3& idir, uint32_t mip, const uint32_t nerf_steps) {
 	float res = scalbnf(NERF_GRIDSIZE(), -(int)mip);
 
 	float t_target = t + distance_to_next_voxel(pos, dir, idir, res);
 
 	// Analytic stepping in multiples of 1 in the "log-space" of our exponential stepping routine
-	t = to_stepping_space(t, cone_angle);
-	t_target = to_stepping_space(t_target, cone_angle);
+	t = to_stepping_space(t, cone_angle, nerf_steps);
+	t_target = to_stepping_space(t_target, cone_angle, nerf_steps);
 
-	return from_stepping_space(t + ceilf(fmaxf(t_target - t, 0.5f)), cone_angle);
+	return from_stepping_space(t + ceilf(fmaxf(t_target - t, 0.5f)), cone_angle, nerf_steps);
 }
 
 __device__ float network_to_rgb(float val, ENerfActivation activation) {
@@ -523,14 +528,14 @@ __device__ vec3 unwarp_direction_derivative(const vec3& dir) {
 	return vec3(2.0f);
 }
 
-__device__ float warp_dt(float dt) {
-	float max_stepsize = MIN_CONE_STEPSIZE() * (1<<(NERF_CASCADES()-1));
-	return (dt - MIN_CONE_STEPSIZE()) / (max_stepsize - MIN_CONE_STEPSIZE());
+__device__ float warp_dt(float dt, const uint32_t nerf_steps) {
+	float max_stepsize = MIN_CONE_STEPSIZE(nerf_steps) * (1<<(NERF_CASCADES()-1));
+	return (dt - MIN_CONE_STEPSIZE(nerf_steps)) / (max_stepsize - MIN_CONE_STEPSIZE(nerf_steps));
 }
 
-__device__ float unwarp_dt(float dt) {
-	float max_stepsize = MIN_CONE_STEPSIZE() * (1<<(NERF_CASCADES()-1));
-	return dt * (max_stepsize - MIN_CONE_STEPSIZE()) + MIN_CONE_STEPSIZE();
+__device__ float unwarp_dt(float dt, const uint32_t nerf_steps) {
+	float max_stepsize = MIN_CONE_STEPSIZE(nerf_steps) * (1<<(NERF_CASCADES()-1));
+	return dt * (max_stepsize - MIN_CONE_STEPSIZE(nerf_steps)) + MIN_CONE_STEPSIZE(nerf_steps);
 }
 
 __device__ uint32_t cascaded_grid_idx_at(vec3 pos, uint32_t mip) {
@@ -660,7 +665,7 @@ __global__ void mark_untrained_density_grid(const uint32_t n_elements,  float* _
 	}
 }
 
-__global__ void generate_grid_samples_nerf_uniform(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, NerfPosition* __restrict__ out) {
+__global__ void generate_grid_samples_nerf_uniform(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, NerfPosition* __restrict__ out, const uint32_t nerf_steps) {
 	// check grid_in for negative values -> must be negative on output
 	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
 	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
@@ -672,11 +677,11 @@ __global__ void generate_grid_samples_nerf_uniform(ivec3 res_3d, const uint32_t 
 	uint32_t i = x + y * res_3d.x + z * res_3d.x * res_3d.y;
 	vec3 pos = vec3{(float)x, (float)y, (float)z} / vec3(res_3d - ivec3(1));
 	pos = transpose(render_aabb_to_local) * (pos * (render_aabb.max - render_aabb.min) + render_aabb.min);
-	out[i] = { warp_position(pos, train_aabb), warp_dt(MIN_CONE_STEPSIZE()) };
+	out[i] = { warp_position(pos, train_aabb), warp_dt(MIN_CONE_STEPSIZE(nerf_steps), nerf_steps) };
 }
 
 
-__global__ void generate_grid_samples_nerf_uniform_with_anti_aliasing(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, NerfPosition* __restrict__ out, const uint32_t n_samples_per_vertex, default_rng_t rng) {
+__global__ void generate_grid_samples_nerf_uniform_with_anti_aliasing(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, NerfPosition* __restrict__ out, const uint32_t n_samples_per_vertex, default_rng_t rng, const uint32_t nerf_steps) {
 	// check grid_in for negative values -> must be negative on output
 	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
 	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
@@ -689,17 +694,17 @@ __global__ void generate_grid_samples_nerf_uniform_with_anti_aliasing(ivec3 res_
 	i = i * n_samples_per_vertex;
 	vec3 pos = vec3{(float)x, (float)y, (float)z} / vec3(res_3d - ivec3(1));
 	vec3 pos_trans = transpose(render_aabb_to_local) * (pos * (render_aabb.max - render_aabb.min) + render_aabb.min);
-	out[i] = { warp_position(pos_trans, train_aabb), warp_dt(MIN_CONE_STEPSIZE()) };
+	out[i] = { warp_position(pos_trans, train_aabb), warp_dt(MIN_CONE_STEPSIZE(nerf_steps), nerf_steps) };
 	for (uint32_t j=0; j<(n_samples_per_vertex-1); j++){
 		vec3 pos_delta = vec3{random_val(rng), random_val(rng), random_val(rng)} / vec3(res_3d - ivec3(1));
 		vec3 new_pos = pos + pos_delta;
 		new_pos = transpose(render_aabb_to_local) * (new_pos * (render_aabb.max - render_aabb.min) + render_aabb.min);
-		out[i+j] = { warp_position(new_pos, train_aabb), warp_dt(MIN_CONE_STEPSIZE()) };
+		out[i+j] = { warp_position(new_pos, train_aabb), warp_dt(MIN_CONE_STEPSIZE(nerf_steps),nerf_steps) };
 	}
 }
 
 // generate samples for uniform grid including constant ray direction
-__global__ void generate_grid_samples_nerf_uniform_dir(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, vec3 ray_dir, PitchedPtr<NerfCoordinate> network_input, const float* extra_dims, bool voxel_centers) {
+__global__ void generate_grid_samples_nerf_uniform_dir(ivec3 res_3d, const uint32_t step, BoundingBox render_aabb, mat3 render_aabb_to_local, BoundingBox train_aabb, vec3 ray_dir, PitchedPtr<NerfCoordinate> network_input, const float* extra_dims, bool voxel_centers, const uint32_t nerf_steps) {
 	// check grid_in for negative values -> must be negative on output
 	uint32_t x = threadIdx.x + blockIdx.x * blockDim.x;
 	uint32_t y = threadIdx.y + blockIdx.y * blockDim.y;
@@ -718,7 +723,7 @@ __global__ void generate_grid_samples_nerf_uniform_dir(ivec3 res_3d, const uint3
 
 	pos = transpose(render_aabb_to_local) * (pos * (render_aabb.max - render_aabb.min) + render_aabb.min);
 
-	network_input(i)->set_with_optional_extra_dims(warp_position(pos, train_aabb), warp_direction(ray_dir), warp_dt(MIN_CONE_STEPSIZE()), extra_dims, network_input.stride_in_bytes);
+	network_input(i)->set_with_optional_extra_dims(warp_position(pos, train_aabb), warp_direction(ray_dir), warp_dt(MIN_CONE_STEPSIZE(nerf_steps),nerf_steps), extra_dims, network_input.stride_in_bytes);
 }
 
 inline __device__ uint32_t mip_from_pos(const vec3& pos, uint32_t max_cascade = NERF_CASCADES()-1) {
@@ -740,7 +745,7 @@ inline __device__ uint32_t mip_from_dt(float dt, const vec3& pos, uint32_t max_c
 	return (uint32_t)tcnn::clamp((int)mip, exponent, (int)max_cascade);
 }
 
-__global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices, uint32_t n_cascades, float thresh) {
+__global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices, uint32_t n_cascades, float thresh, const uint32_t nerf_steps) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
@@ -767,14 +772,15 @@ __global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements,
 
 	vec3 pos = ((vec3{(float)x, (float)y, (float)z} + random_val_3d(rng)) / (float)NERF_GRIDSIZE() - vec3(0.5f)) * scalbnf(1.0f, level) + vec3(0.5f);
 
-	out[i] = { warp_position(pos, aabb), warp_dt(MIN_CONE_STEPSIZE()) };
+	out[i] = { warp_position(pos, aabb), warp_dt(MIN_CONE_STEPSIZE(nerf_steps),nerf_steps) };
 	indices[i] = idx;
 }
 
 __global__ void splat_grid_samples_nerf_max_nearest_neighbor(const uint32_t n_elements, const uint32_t* __restrict__ indices, 
 															const tcnn::network_precision_t* network_output, float* __restrict__ grid_out, 
 															ENerfActivation rgb_activation, ENerfActivation density_activation,
-															const bool use_volsdf, const bool use_stylesdf, const bool use_coslam_sdf, const float beta
+															const bool use_volsdf, const bool use_stylesdf, const bool use_coslam_sdf, const float beta,
+															const uint32_t nerf_steps
 															) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -794,7 +800,7 @@ __global__ void splat_grid_samples_nerf_max_nearest_neighbor(const uint32_t n_el
 		mlp = vol_sdf_to_density(mlp, beta/10.);
 	}
 	
-	float optical_thickness = mlp * scalbnf(MIN_CONE_STEPSIZE(), level);
+	float optical_thickness = mlp * scalbnf(MIN_CONE_STEPSIZE(nerf_steps), level);
 
 	// Positive floats are monotonically ordered when their bit pattern is interpretes as uint.
 	// uint atomicMax is thus perfectly acceptable.
@@ -989,6 +995,7 @@ __device__ float if_unoccupied_advance_to_next_occupied_voxel(
 	uint32_t min_mip,
 	uint32_t max_mip,
 	BoundingBox aabb,
+	const uint32_t nerf_steps,
 	mat3 aabb_to_local = mat3(1.0f)
 ) {
 	while (true) {
@@ -997,7 +1004,7 @@ __device__ float if_unoccupied_advance_to_next_occupied_voxel(
 			return MAX_DEPTH();
 		}
 
-		uint32_t mip = tcnn::clamp(MIP_FROM_DT ? mip_from_dt(calc_dt(t, cone_angle), pos) : mip_from_pos(pos), min_mip, max_mip);
+		uint32_t mip = tcnn::clamp(MIP_FROM_DT ? mip_from_dt(calc_dt(t, cone_angle, nerf_steps), pos) : mip_from_pos(pos), min_mip, max_mip);
 
 		if (!density_grid || density_grid_occupied_at(pos, density_grid, mip)) {
 			return t;
@@ -1010,7 +1017,7 @@ __device__ float if_unoccupied_advance_to_next_occupied_voxel(
 			++mip;
 		}
 
-		t = advance_to_next_voxel(t, cone_angle, pos, ray.d, idir, mip);
+		t = advance_to_next_voxel(t, cone_angle, pos, ray.d, idir, mip, nerf_steps);
 	}
 }
 
@@ -1024,7 +1031,8 @@ __device__ void advance_pos_nerf(
 	const uint8_t* __restrict__ density_grid,
 	uint32_t min_mip,
 	uint32_t max_mip,
-	float cone_angle_constant
+	float cone_angle_constant,
+	const uint32_t nerf_steps
 ) {
 	if (!payload.alive) {
 		return;
@@ -1036,9 +1044,9 @@ __device__ void advance_pos_nerf(
 
 	float cone_angle = calc_cone_angle(dot(dir, camera_fwd), focal_length, cone_angle_constant);
 
-	float t = advance_n_steps(payload.t, cone_angle, ld_random_val(sample_index, payload.idx * 786433));
+	float t = advance_n_steps(payload.t, cone_angle, ld_random_val(sample_index, payload.idx * 786433), nerf_steps);
 	if (density_grid) {
-		t = if_unoccupied_advance_to_next_occupied_voxel(t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local);
+		t = if_unoccupied_advance_to_next_occupied_voxel(t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, nerf_steps, render_aabb_to_local);
 	}
 	if (t >= MAX_DEPTH()) {
 		payload.alive = false;
@@ -1058,28 +1066,29 @@ __global__ void advance_pos_nerf_kernel(
 	const uint8_t* __restrict__ density_grid,
 	uint32_t min_mip,
 	uint32_t max_mip,
-	float cone_angle_constant
+	float cone_angle_constant,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
-	advance_pos_nerf(payloads[i], render_aabb, render_aabb_to_local, camera_fwd, focal_length, sample_index, density_grid, min_mip, max_mip, cone_angle_constant);
+	advance_pos_nerf(payloads[i], render_aabb, render_aabb_to_local, camera_fwd, focal_length, sample_index, density_grid, min_mip, max_mip, cone_angle_constant, nerf_steps);
 }
 
-__global__ void generate_nerf_network_inputs_from_positions(const uint32_t n_elements, BoundingBox aabb, const vec3* __restrict__ pos, PitchedPtr<NerfCoordinate> network_input, const float* extra_dims) {
+__global__ void generate_nerf_network_inputs_from_positions(const uint32_t n_elements, BoundingBox aabb, const vec3* __restrict__ pos, PitchedPtr<NerfCoordinate> network_input, const float* extra_dims, const uint32_t nerf_steps) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
 	vec3 dir = normalize(pos[i] - vec3(0.5f)); // choose outward pointing directions, for want of a better choice
-	network_input(i)->set_with_optional_extra_dims(warp_position(pos[i], aabb), warp_direction(dir), warp_dt(MIN_CONE_STEPSIZE()), extra_dims, network_input.stride_in_bytes);
+	network_input(i)->set_with_optional_extra_dims(warp_position(pos[i], aabb), warp_direction(dir), warp_dt(MIN_CONE_STEPSIZE(nerf_steps), nerf_steps), extra_dims, network_input.stride_in_bytes);
 }
 
-__global__ void generate_nerf_network_inputs_at_current_position(const uint32_t n_elements, BoundingBox aabb, const NerfPayload* __restrict__ payloads, PitchedPtr<NerfCoordinate> network_input, const float* extra_dims) {
+__global__ void generate_nerf_network_inputs_at_current_position(const uint32_t n_elements, BoundingBox aabb, const NerfPayload* __restrict__ payloads, PitchedPtr<NerfCoordinate> network_input, const float* extra_dims, const uint32_t nerf_steps) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
 	vec3 dir = payloads[i].dir;
-	network_input(i)->set_with_optional_extra_dims(warp_position(payloads[i].origin + dir * payloads[i].t, aabb), warp_direction(dir), warp_dt(MIN_CONE_STEPSIZE()), extra_dims, network_input.stride_in_bytes);
+	network_input(i)->set_with_optional_extra_dims(warp_position(payloads[i].origin + dir * payloads[i].t, aabb), warp_direction(dir), warp_dt(MIN_CONE_STEPSIZE(nerf_steps), nerf_steps), extra_dims, network_input.stride_in_bytes);
 }
 
 __device__ vec4 compute_nerf_rgba(const vec4& network_output, ENerfActivation rgb_activation, ENerfActivation density_activation, float depth, bool density_as_alpha = false) {
@@ -1120,7 +1129,8 @@ __global__ void generate_next_nerf_network_inputs(
 	float cone_angle_constant,
 	const float* extra_dims,
 	const bool use_custom_ray_marching,
-	const float dt_for_regular_sampling
+	const float dt_for_regular_sampling,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -1143,7 +1153,7 @@ __global__ void generate_next_nerf_network_inputs(
 
 	for (uint32_t j = 0; j < n_steps; ++j) {
 		if (density_grid) {
-			t = if_unoccupied_advance_to_next_occupied_voxel(t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, render_aabb_to_local);
+			t = if_unoccupied_advance_to_next_occupied_voxel(t, cone_angle, {origin, dir}, idir, density_grid, min_mip, max_mip, render_aabb, nerf_steps, render_aabb_to_local);
 		}
 		if (t >= MAX_DEPTH()) {
 			payload.n_steps = j;
@@ -1163,9 +1173,9 @@ __global__ void generate_next_nerf_network_inputs(
 				cam_fwd_factor, false
 			);
 		} else {
-			dt = calc_dt(t, cone_angle);
+			dt = calc_dt(t, cone_angle, nerf_steps);
 		}
-		network_input(i + j * n_elements)->set_with_optional_extra_dims(warp_position(origin + dir * t, train_aabb), warp_direction(dir), warp_dt(dt), extra_dims, network_input.stride_in_bytes); // XXXCONE
+		network_input(i + j * n_elements)->set_with_optional_extra_dims(warp_position(origin + dir * t, train_aabb), warp_direction(dir), warp_dt(dt, nerf_steps), extra_dims, network_input.stride_in_bytes); // XXXCONE
 		t += dt;
 	}
 
@@ -1346,7 +1356,8 @@ __global__ void composite_kernel_nerf(
 	const bool use_vol_sdf,
 	const bool use_coslam_sdf,
 	const float beta,
-	const float truncation_distance
+	const float truncation_distance,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -1398,7 +1409,7 @@ __global__ void composite_kernel_nerf(
 			}
 		} else {
 			float T = 1.f - local_rgba.a;
-			float dt = unwarp_dt(input->dt);
+			float dt = unwarp_dt(input->dt, nerf_steps);
 			float density = network_to_density(float(local_network_output[3]), density_activation);
 			if (use_vol_sdf) {
 				density = vol_sdf_to_density(density, beta);
@@ -1710,7 +1721,8 @@ __global__ void generate_training_samples_nerf(
 	const ivec2 cdf_res,
 	const float* __restrict__ extra_dims_gpu,
 	uint32_t n_extra_dims,
-	const bool use_pos_instead_of_dir
+	const bool use_pos_instead_of_dir,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -1778,7 +1790,7 @@ __global__ void generate_training_samples_nerf(
 	// The near distance prevents learning of camera-specific fudge right in front of the camera
 	tminmax.x = fmaxf(tminmax.x, 0.0f);
 
-	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng));
+	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng), nerf_steps);
 	vec3 idir = vec3(1.0f) / ray_d_normalized;
 
 	// first pass to compute an accurate number of steps
@@ -1786,14 +1798,14 @@ __global__ void generate_training_samples_nerf(
 	float t = startt;
 	vec3 pos;
 
-	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS()) {
-		float dt = calc_dt(t, cone_angle);
+	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS(nerf_steps)) {
+		float dt = calc_dt(t, cone_angle, nerf_steps);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid_occupied_at(pos, density_grid, mip)) {
 			++j;
 			t += dt;
 		} else {
-			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 		}
 	}
 	if (j == 0 && !train_envmap) {
@@ -1818,18 +1830,18 @@ __global__ void generate_training_samples_nerf(
 	t=startt;
 	j=0;
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
-		float dt = calc_dt(t, cone_angle);
+		float dt = calc_dt(t, cone_angle, nerf_steps);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid_occupied_at(pos, density_grid, mip)) {
 			if (use_pos_instead_of_dir){
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			} else {
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			}
 			++j;
 			t += dt;
 		} else {
-			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 		}
 	}
 
@@ -1892,7 +1904,8 @@ __global__ void compute_loss_kernel_train_nerf(
 	const vec3* __restrict__ exposure,
 	vec3* __restrict__ exposure_gradient,
 	float depth_supervision_lambda,
-	float near_distance
+	float near_distance,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -1922,7 +1935,7 @@ __global__ void compute_loss_kernel_train_nerf(
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 		const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-		const float dt = unwarp_dt(coords_in.ptr->dt);
+		const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
 		float cur_depth = distance(pos, ray_o);
 		float density = network_to_density(float(local_network_output[3]), density_activation);
 
@@ -2078,7 +2091,7 @@ __global__ void compute_loss_kernel_train_nerf(
 		const vec3 pos = unwarp_position(coord_in->pos.p, aabb);
 		float depth = distance(pos, ray_o);
 
-		float dt = unwarp_dt(coord_in->dt);
+		float dt = unwarp_dt(coord_in->dt, nerf_steps);
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 		const float density = network_to_density(float(local_network_output[3]), density_activation);
@@ -2600,7 +2613,8 @@ void Testbed::NerfTracer::init_rays_from_camera(
 	float cone_angle_constant,
 	ERenderMode render_mode,
 	cudaStream_t stream,
-	bool use_sdf_in_nerf
+	bool use_sdf_in_nerf,
+	const uint32_t nerf_steps
 ) {
 	// Make sure we have enough memory reserved to render at the requested resolution
 	size_t n_pixels = (size_t)resolution.x * resolution.y;
@@ -2651,7 +2665,8 @@ void Testbed::NerfTracer::init_rays_from_camera(
 		grid,
 		(show_accel >= 0) ? show_accel : 0,
 		max_mip,
-		cone_angle_constant
+		cone_angle_constant,
+		nerf_steps
 	);
 }
 
@@ -2686,7 +2701,8 @@ uint32_t Testbed::NerfTracer::trace(
     float sdf_beta,
 	//Custom SLAIM sampling related vars
 	const bool use_custom_ray_marching,
-	const float dt_for_regular_sampling
+	const float dt_for_regular_sampling,
+	const uint32_t nerf_steps
 ) {
 	if (m_n_rays_initialized == 0) {
 		return 0;
@@ -2746,7 +2762,8 @@ uint32_t Testbed::NerfTracer::trace(
 				extra_dims_gpu,
 				//Custom Ray marching
 				use_custom_ray_marching,
-	 			dt_for_regular_sampling
+	 			dt_for_regular_sampling,
+				nerf_steps
 			);
 
 		uint32_t n_elements = next_multiple(n_alive * n_steps_between_compaction, tcnn::batch_size_granularity);
@@ -2814,7 +2831,8 @@ uint32_t Testbed::NerfTracer::trace(
     			use_volsdf_in_nerf,
     			use_coslam_sdf_in_nerf,
 				sdf_beta,
-				truncation_distance
+				truncation_distance,
+				nerf_steps
 		    );
         }
 
@@ -2977,7 +2995,8 @@ void Testbed::render_nerf(
 		m_nerf.cone_angle_constant,
 		render_mode,
 		stream,
-		(m_use_sdf_in_nerf||m_use_coslam_sdf_in_nerf)
+		(m_use_sdf_in_nerf||m_use_coslam_sdf_in_nerf),
+		m_nerf_steps
 	);
 
 	uint32_t n_hit;
@@ -3017,7 +3036,8 @@ void Testbed::render_nerf(
 			m_nerf.training.volsdf_beta,
 			//Custom Ray marching,
 			m_use_custom_ray_marching,
-			m_nerf.training.dt_for_regular_sampling
+			m_nerf.training.dt_for_regular_sampling,
+			m_nerf_steps
 		);
 	}
 	RaysNerfSoa& rays_hit = m_render_mode == ERenderMode::Slice ? tracer.rays_init() : tracer.rays_hit();
@@ -3031,7 +3051,7 @@ void Testbed::render_nerf(
 		GPUMatrix<float> positions_matrix{floats_per_coord, n_elements, stream};
 		GPUMatrix<float> rgbsigma_matrix{4, n_elements, stream};
 
-		linear_kernel(generate_nerf_network_inputs_at_current_position, 0, stream, n_hit, m_aabb, rays_hit.payload, PitchedPtr<NerfCoordinate>((NerfCoordinate*)positions_matrix.data(), 1, 0, extra_stride), extra_dims_gpu );
+		linear_kernel(generate_nerf_network_inputs_at_current_position, 0, stream, n_hit, m_aabb, rays_hit.payload, PitchedPtr<NerfCoordinate>((NerfCoordinate*)positions_matrix.data(), 1, 0, extra_stride), extra_dims_gpu, m_nerf_steps );
 
 		if (visualized_dimension == -1) {
 			nerf_network.inference(stream, positions_matrix, rgbsigma_matrix);
@@ -3417,7 +3437,8 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			density_grid_positions,
 			density_grid_indices,
 			m_nerf.max_cascade+1,
-			-0.01f
+			-0.01f,
+			m_nerf_steps
 		);
 		m_nerf.training.density_grid_rng.advance();
 
@@ -3430,7 +3451,8 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			density_grid_positions+n_uniform_density_grid_samples,
 			density_grid_indices+n_uniform_density_grid_samples,
 			m_nerf.max_cascade+1,
-			NERF_MIN_OPTICAL_THICKNESS()
+			NERF_MIN_OPTICAL_THICKNESS(),
+			m_nerf_steps
 		);
 		m_nerf.training.density_grid_rng.advance();
 
@@ -3446,7 +3468,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			m_nerf_network->density(stream, density_grid_position_matrix, density_matrix, false);
 		}
 
-		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta);
+		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta, m_nerf_steps);
 		linear_kernel(ema_grid_samples_nerf, 0, stream, n_elements, decay, m_nerf.density_grid_ema_step, m_nerf.density_grid.data(), density_grid_tmp);
 
 		++m_nerf.density_grid_ema_step;
@@ -3908,7 +3930,8 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, Testbed::NerfCounters&
 			m_nerf.training.error_map.cdf_resolution,
 			m_nerf.training.extra_dims_gpu.data(),
 			m_nerf_network->n_extra_dims(),
-			m_do_multi_pos_encoding
+			m_do_multi_pos_encoding,
+			m_nerf_steps
 		);
 
 
@@ -3986,7 +4009,8 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, Testbed::NerfCounters&
 			m_nerf.training.cam_exposure_gpu.data(),
 			m_nerf.training.optimize_exposure ? m_nerf.training.cam_exposure_gradient_gpu.data() : nullptr,
 			m_nerf.training.depth_supervision_lambda,
-			m_nerf.training.near_distance
+			m_nerf.training.near_distance,
+			m_nerf_steps
 		);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
@@ -4101,7 +4125,8 @@ void Testbed::optimise_mesh_step(uint32_t n_steps) {
 			m_aabb,
 			m_mesh.verts.data(),
 			PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride),
-			extra_dims_gpu
+			extra_dims_gpu,
+			m_nerf_steps
 		);
 
 		// For each optimizer step, we need the density at the given pos...
@@ -4150,7 +4175,7 @@ void Testbed::compute_mesh_vertex_colors() {
 
 		GPUMatrix<float> positions_matrix((float*)coords.data(), floats_per_coord, n_verts);
 		GPUMatrix<float> color_matrix(mlp_out.data(), 4, n_verts);
-		linear_kernel(generate_nerf_network_inputs_from_positions, 0, m_stream.get(), n_verts, m_aabb, m_mesh.verts.data(), PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride), extra_dims_gpu);
+		linear_kernel(generate_nerf_network_inputs_from_positions, 0, m_stream.get(), n_verts, m_aabb, m_mesh.verts.data(), PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride), extra_dims_gpu, m_nerf_steps);
 		m_network->inference(m_stream.get(), positions_matrix, color_matrix);
 		linear_kernel(extract_srgb_with_activation, 0, m_stream.get(), n_verts * 3, 3, mlp_out.data(), (float*)m_mesh.vert_colors.data(), m_nerf.rgb_activation, m_nerf.training.linear_colors);
 	}
@@ -4178,7 +4203,7 @@ GPUMemory<float> Testbed::get_density_on_grid(ivec3 res3d, const BoundingBox& aa
 	const dim3 blocks = { div_round_up((uint32_t)res3d.x, threads.x), div_round_up((uint32_t)res3d.y, threads.y), div_round_up((uint32_t)res3d.z, threads.z) };
 
 	BoundingBox unit_cube = BoundingBox{vec3(0.0f), vec3(1.0f)};
-	generate_grid_samples_nerf_uniform<<<blocks, threads, 0, m_stream.get()>>>(res3d, m_nerf.density_grid_ema_step, aabb, render_aabb_to_local, nerf_mode ? m_aabb : unit_cube , positions);
+	generate_grid_samples_nerf_uniform<<<blocks, threads, 0, m_stream.get()>>>(res3d, m_nerf.density_grid_ema_step, aabb, render_aabb_to_local, nerf_mode ? m_aabb : unit_cube , positions, m_nerf_steps);
 
 	// Only process 1m elements at a time
 	for (uint32_t offset = 0; offset < n_elements; offset += batch_size) {
@@ -4234,7 +4259,7 @@ GPUMemory<float> Testbed::get_density_on_grid_anti_aliasing(ivec3 res3d, const B
 
 	BoundingBox unit_cube = BoundingBox{vec3(0.0f), vec3(1.0f)};
 	generate_grid_samples_nerf_uniform_with_anti_aliasing<<<blocks, threads, 0, m_stream.get()>>>(res3d, m_nerf.density_grid_ema_step, 
-	aabb, render_aabb_to_local, nerf_mode ? m_aabb : unit_cube , positions, n_samples_per_vertex, m_rng);
+	aabb, render_aabb_to_local, nerf_mode ? m_aabb : unit_cube , positions, n_samples_per_vertex, m_rng, m_nerf_steps);
 
 	// Only process 1m elements at a time
 	for (uint32_t offset = 0; offset < n_elements_up; offset += batch_size) {
@@ -4295,7 +4320,8 @@ GPUMemory<vec4> Testbed::get_rgba_on_grid(ivec3 res3d, vec3 ray_dir, bool voxel_
 		ray_dir,
 		PitchedPtr<NerfCoordinate>((NerfCoordinate*)positions.data(), 1, 0, extra_stride),
 		extra_dims_gpu,
-		voxel_centers
+		voxel_centers,
+		m_nerf_steps
 	);
 
 	// Only process 1m elements at a time
@@ -4518,7 +4544,8 @@ __global__ void generate_training_samples_nerf_slam(
 	float* __restrict__ xy_coords_sample, //DEBUG
 	uint32_t* __restrict__ img_id_sample,  //DEBUG
 	float* __restrict__ sample_z_vals, //DEBUG
-	const bool use_pos_instead_of_dir
+	const bool use_pos_instead_of_dir,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -4573,7 +4600,7 @@ __global__ void generate_training_samples_nerf_slam(
 	// The near distance prevents learning of camera-specific fudge right in front of the camera
 	tminmax.x = fmaxf(tminmax.x, 0.0f);
 
-	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng));
+	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng), nerf_steps);
 	vec3 idir = vec3(1.0f) / ray_d_normalized;
 
 	// first pass to compute an accurate number of steps
@@ -4587,7 +4614,7 @@ __global__ void generate_training_samples_nerf_slam(
 	if (use_custom_ray_marching) {
 		max_samples_per_ray = n_samples_for_regular_sampling;
 	} else {
-		max_samples_per_ray = NERF_STEPS(); 
+		max_samples_per_ray = NERF_STEPS(nerf_steps); 
 	}
 
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < max_samples_per_ray) {
@@ -4606,10 +4633,11 @@ __global__ void generate_training_samples_nerf_slam(
 				dt = calc_dt_with_depth_guided_sampling(
 					t, cone_angle,
 					cur_depth, target_depth,
-					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling,
+					nerf_steps
 				);
 			} else {
-				dt = calc_dt(t, cone_angle);
+				dt = calc_dt(t, cone_angle, nerf_steps);
 			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
@@ -4618,7 +4646,7 @@ __global__ void generate_training_samples_nerf_slam(
 				++j;
 				t += dt;
 			} else {
-				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 			}
 		} else {
 			++j;
@@ -4673,19 +4701,20 @@ __global__ void generate_training_samples_nerf_slam(
 				dt = calc_dt_with_depth_guided_sampling(
 					t, cone_angle,
 					cur_depth, target_depth,
-					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling,
+					nerf_steps
 				);
 			} else {
-				dt = calc_dt(t, cone_angle);
+				dt = calc_dt(t, cone_angle, nerf_steps);
 			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid){
 			if (density_grid_occupied_at(pos, density_grid, mip)) {
 				if (use_pos_instead_of_dir){
-					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 				} else {
-					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 				}
 				if (sample_z_vals) {
 					float cur_z = dot(cam_fwd, pos - ray_o);
@@ -4694,13 +4723,13 @@ __global__ void generate_training_samples_nerf_slam(
 				++j;
 				t += dt;
 			} else {
-				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 			}
 		} else {
 			if (use_pos_instead_of_dir){
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			} else {
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt,nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			}
 			if (sample_z_vals) {
 				float cur_z = dot(cam_fwd, pos - ray_o);
@@ -4800,7 +4829,9 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 	const bool add_sdf_loss,
 	const float sdf_supervision_lambda,
 	const bool add_sdf_free_space_loss,
-	const float sdf_free_space_supervision_lambda
+	const float sdf_free_space_supervision_lambda,
+
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -4874,7 +4905,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 		const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-		const float dt = unwarp_dt(coords_in.ptr->dt);
+		const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
 		float cur_depth = distance(pos, ray_o);
 		float cur_z = dot(cam_fwd, pos - ray_o);
 		float weight;
@@ -4947,7 +4978,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		for (uint32_t j=0; j < compacted_numsteps; ++j) {
 			const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
  	       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-			const float dt = unwarp_dt(coords_in.ptr->dt);
+			const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
 			float cur_depth = distance(pos, ray_o);
  	 	    float tmp = (cur_depth - depth_ray) * (cur_depth - depth_ray);
 			float weight;
@@ -5083,7 +5114,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 			uint32_t tmp_j=0;
 			for (; tmp_j < compacted_numsteps; ++tmp_j) {
 				const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
-				const float dt = unwarp_dt(coords_in.ptr->dt);
+				const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
  		       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
 				float cur_depth = distance(pos, ray_o);
 				
@@ -5127,7 +5158,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 			T = 1.f;
 			for (; tmp_j < compacted_numsteps; ++tmp_j) {
 				const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
-				const float dt = unwarp_dt(coords_in.ptr->dt);
+				const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
  		       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
 				const float cur_depth = distance(pos, ray_o);
 				float density = network_to_density(float(local_network_output[3]), density_activation);
@@ -5310,7 +5341,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 		float depth = distance(pos, ray_o);
 		float cur_z = dot(cam_fwd, pos - ray_o);
 
-		float dt = unwarp_dt(coord_in->dt);
+		float dt = unwarp_dt(coord_in->dt, nerf_steps);
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 
@@ -5415,7 +5446,7 @@ __global__ void compute_loss_kernel_train_nerf_slam(
 						const NerfCoordinate* tmp_coord_in = coords_in(k);
 						const vec3 tmp_pos = unwarp_position(tmp_coord_in->pos.p, aabb);
 						float tmp_depth = distance(tmp_pos, ray_o);
-						float tmp_dt = unwarp_dt(tmp_coord_in->dt);
+						float tmp_dt = unwarp_dt(tmp_coord_in->dt, nerf_steps);
 						if (DSnerf_loss_with_sech2_dist) {
 							tmp_ds_grad += dt * tmp_dt * ray_term_dist_with_sech2(tmp_depth, target_depth, DS_nerf_supervision_depth_sigma, DS_nerf_supervision_sech2_scale, DS_nerf_supervision_sech2_norm, DS_nerf_supervision_sech2_int_A, DS_nerf_supervision_sech2_int_B);
 						} else {
@@ -6696,7 +6727,8 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 			m_debug ? xy_coords_sample.data(): nullptr,
 			m_debug ? img_id_sample.data(): nullptr,
 			m_debug ? sample_z_vals.data(): nullptr,
-			m_do_multi_pos_encoding
+			m_do_multi_pos_encoding,
+			m_nerf_steps
 		);
 
 	//DEBUG
@@ -6915,7 +6947,8 @@ void Testbed::train_nerf_slam_step(uint32_t target_batch_size, Testbed::NerfCoun
 		    	m_add_sdf_loss,
 		    	m_nerf.training.sdf_supervision_lambda,
 		    	m_add_sdf_free_space_loss,
-		    	m_nerf.training.sdf_free_space_supervision_lambda
+		    	m_nerf.training.sdf_free_space_supervision_lambda,
+				m_nerf_steps
 		    );
         }
 
@@ -7317,7 +7350,8 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 			nullptr,
 			nullptr,
 			nullptr,
-			m_do_multi_pos_encoding
+			m_do_multi_pos_encoding,
+			m_nerf_steps
 		);
 
 
@@ -7500,7 +7534,8 @@ void Testbed::train_nerf_slam_tracking_step(uint32_t target_batch_size, Testbed:
 		    	m_add_sdf_loss_tracking,
 		    	m_nerf.training.sdf_supervision_lambda_tracking,
 		    	m_add_sdf_free_space_loss_tracking,
-		    	m_nerf.training.sdf_free_space_supervision_lambda_tracking
+		    	m_nerf.training.sdf_free_space_supervision_lambda_tracking,
+				m_nerf_steps
 			);
 	}
 	
@@ -7643,7 +7678,8 @@ __global__ void generate_training_samples_for_tracking_gp(
 	const float dt_for_regular_sampling,
 	const float dt_for_depth_guided_sampling,
 	const float truncation_distance_for_depth_guided_sampling,
-	const bool use_pos_instead_of_dir
+	const bool use_pos_instead_of_dir,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -7704,7 +7740,7 @@ __global__ void generate_training_samples_for_tracking_gp(
 	// The near distance prevents learning of camera-specific fudge right in front of the camera
 	tminmax.x = fmaxf(tminmax.x, 0.0f);
 
-	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng));
+	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng), nerf_steps);
 	vec3 idir = vec3(1.0f) / ray_d_normalized;
 
 	// first pass to compute an accurate number of steps
@@ -7714,7 +7750,7 @@ __global__ void generate_training_samples_for_tracking_gp(
 	vec3 ray_o = ray_unnormalized.o;
 	float cam_fwd_factor = dot(cam_fwd, ray_d_normalized);
 
-	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS()) {
+	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS(nerf_steps)) {
 		float dt;
 		if (use_custom_ray_marching){
 			float cur_z = dot(cam_fwd, pos - ray_o);
@@ -7729,10 +7765,11 @@ __global__ void generate_training_samples_for_tracking_gp(
 				dt = calc_dt_with_depth_guided_sampling(
 					t, cone_angle,
 					cur_depth, target_depth,
-					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling,
+					nerf_steps
 				);
 			} else {
-				dt = calc_dt(t, cone_angle);
+				dt = calc_dt(t, cone_angle, nerf_steps);
 			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
@@ -7741,7 +7778,7 @@ __global__ void generate_training_samples_for_tracking_gp(
 				++j;
 				t += dt;
 			} else {
-				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 			}
 		} else {
 			++j;
@@ -7790,19 +7827,20 @@ __global__ void generate_training_samples_for_tracking_gp(
 				dt = calc_dt_with_depth_guided_sampling(
 					t, cone_angle,
 					cur_depth, target_depth,
-					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling
+					dt_for_depth_guided_sampling, truncation_distance_for_depth_guided_sampling,
+					nerf_steps
 				);
 			} else {
-				dt = calc_dt(t, cone_angle);
+				dt = calc_dt(t, cone_angle, nerf_steps);
 			}
 		}
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid) {
 			if (density_grid_occupied_at(pos, density_grid, mip)) {
 				if (use_pos_instead_of_dir){
-					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 				} else {
-					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+					coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 				}
 				if (sample_z_vals) {
 					float cur_z = dot(cam_fwd, pos - ray_o);
@@ -7811,13 +7849,13 @@ __global__ void generate_training_samples_for_tracking_gp(
 				++j;
 				t += dt;
 			} else {
-				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+				t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 			}
 		} else {
 			if (use_pos_instead_of_dir){
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			} else {
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			}
 			if (sample_z_vals) {
 				float cur_z = dot(cam_fwd, pos - ray_o);
@@ -7864,7 +7902,8 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 	const bool add_DSnerf_loss,
 	const float DS_nerf_supervision_depth_sigma,
 	const bool add_free_space_loss,
-	const float free_space_supervision_distance
+	const float free_space_supervision_distance,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -7909,7 +7948,7 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 		const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-		const float dt = unwarp_dt(coords_in.ptr->dt);
+		const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
 		float cur_depth = distance(pos, ray_o);
 		float density = network_to_density(float(local_network_output[3]), density_activation);
 		
@@ -7949,7 +7988,7 @@ __global__ void compute_GT_and_reconstructed_rgbd_gp(
 		for (uint32_t j=0; j < compacted_numsteps; ++j) {
 			const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
  	       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-			const float dt = unwarp_dt(coords_in.ptr->dt);
+			const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
 			float cur_depth = distance(pos, ray_o);
 			float density = network_to_density(float(local_network_output[3]), density_activation);
 
@@ -8562,7 +8601,9 @@ __global__ void compute_gradient_gp(
 
 	const bool add_free_space_loss,
 	const float free_space_supervision_lambda,
-	const float free_space_supervision_distance
+	const float free_space_supervision_distance,
+
+	const uint32_t nerf_steps
 ) {
 
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -8651,7 +8692,7 @@ __global__ void compute_gradient_gp(
 		if (depth_ray_target > 0.0f){
 			uint32_t tmp_j=0;
 			for (; tmp_j < numsteps_compact; ++tmp_j) {
-				const float dt = unwarp_dt(coords_in.ptr->dt);
+				const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
  		       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
 				float cur_depth = distance(pos, ray_o);
 				
@@ -8679,7 +8720,7 @@ __global__ void compute_gradient_gp(
 	    const vec3 pos = unwarp_position(coord_in->pos.p, aabb);
 	    float depth = distance(pos, ray_o);
 
-	    float dt = unwarp_dt(coord_in->dt);
+	    float dt = unwarp_dt(coord_in->dt, nerf_steps);
 	    const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 	    const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 	    const float density = network_to_density(float(local_network_output[3]), density_activation);
@@ -8740,7 +8781,7 @@ __global__ void compute_gradient_gp(
 						const NerfCoordinate* tmp_coord_in = coords_in(k);
 						const vec3 tmp_pos = unwarp_position(tmp_coord_in->pos.p, aabb);
 						float tmp_depth = distance(tmp_pos, ray_o);
-						float tmp_dt = unwarp_dt(tmp_coord_in->dt);
+						float tmp_dt = unwarp_dt(tmp_coord_in->dt, nerf_steps);
 						if (DSnerf_loss_with_sech2_dist) {
 							tmp_ds_grad += dt * tmp_dt * ray_term_dist_with_sech2(tmp_depth, target_depth, DS_nerf_supervision_depth_sigma, DS_nerf_supervision_sech2_scale, DS_nerf_supervision_sech2_norm, DS_nerf_supervision_sech2_int_A, DS_nerf_supervision_sech2_int_B);
 						} else {
@@ -9121,7 +9162,8 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		m_nerf.training.dt_for_regular_sampling,
 		m_nerf.training.dt_for_depth_guided_sampling,
 		m_nerf.training.truncation_distance_for_depth_guided_sampling,
-		m_do_multi_pos_encoding
+		m_do_multi_pos_encoding,
+		m_nerf_steps
 	);
 
 	//NOTE: some checks on the # ray sampled
@@ -9206,7 +9248,8 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		m_add_DSnerf_loss_tracking,
 		m_nerf.training.DS_nerf_supervision_depth_sigma,
 		m_add_free_space_loss_tracking,
-		m_nerf.training.free_space_supervision_distance
+		m_nerf.training.free_space_supervision_distance,
+		m_nerf_steps
 	);
 
 
@@ -9461,7 +9504,8 @@ void Testbed::train_nerf_slam_tracking_step_with_gaussian_pyramid(uint32_t targe
 		m_nerf.training.DS_nerf_supervision_sech2_int_B,
 		m_add_free_space_loss_tracking,
 		m_nerf.training.free_space_supervision_lambda_tracking,
-		m_nerf.training.free_space_supervision_distance
+		m_nerf.training.free_space_supervision_distance,
+		m_nerf_steps
 	);
 
 
@@ -9619,7 +9663,8 @@ __global__ void generate_training_samples_nerf_slam_mgl(
 	const uint32_t* __restrict__ idx_images_for_mapping,
 	const ivec2 sample_away_from_border_margin,
 	const float max_grid_level,
-	const bool use_pos_instead_of_dir
+	const bool use_pos_instead_of_dir,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -9668,7 +9713,7 @@ __global__ void generate_training_samples_nerf_slam_mgl(
 	// The near distance prevents learning of camera-specific fudge right in front of the camera
 	tminmax.x = fmaxf(tminmax.x, 0.0f);
 
-	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng));
+	float startt = advance_n_steps(tminmax.x, cone_angle, random_val(rng), nerf_steps);
 	vec3 idir = vec3(1.0f) / ray_d_normalized;
 
 	// first pass to compute an accurate number of steps
@@ -9676,14 +9721,14 @@ __global__ void generate_training_samples_nerf_slam_mgl(
 	float t = startt;
 	vec3 pos;
 
-	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS()) {
-		float dt = calc_dt(t, cone_angle);
+	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < NERF_STEPS(nerf_steps)) {
+		float dt = calc_dt(t, cone_angle, nerf_steps);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid_occupied_at(pos, density_grid, mip)) {
 			++j;
 			t += dt;
 		} else {
-			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 		}
 	}
 	if (j == 0 && !train_envmap) {
@@ -9714,18 +9759,18 @@ __global__ void generate_training_samples_nerf_slam_mgl(
 	t=startt;
 	j=0;
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
-		float dt = calc_dt(t, cone_angle);
+		float dt = calc_dt(t, cone_angle, nerf_steps);
 		uint32_t mip = mip_from_dt(dt, pos, max_mip);
 		if (density_grid_occupied_at(pos, density_grid, mip)) {
 			if (use_pos_instead_of_dir){
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warp_position(pos, aabb), warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			} else {
-				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
+				coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt, nerf_steps), extra_dims, coords_out.stride_in_bytes);
 			}
 			++j;
 			t += dt;
 		} else {
-			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip);
+			t = advance_to_next_voxel(t, cone_angle, pos, ray_d_normalized, idir, mip, nerf_steps);
 		}
 	}
 
@@ -9793,7 +9838,8 @@ __global__ void compute_loss_kernel_train_nerf_slam_mgl(
 	const uint32_t* __restrict__ idx_images_for_mapping,
 	const ivec2 sample_away_from_border_margin,
 	const bool use_depth_variance_in_loss,
-	const float max_grid_level
+	const float max_grid_level,
+	const uint32_t nerf_steps
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= *rays_counter) { return; }
@@ -9823,7 +9869,7 @@ __global__ void compute_loss_kernel_train_nerf_slam_mgl(
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 		const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-		const float dt = unwarp_dt(coords_in.ptr->dt);
+		const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
 		float cur_depth = distance(pos, ray_o);
 		float density = network_to_density(float(local_network_output[3]), density_activation);
 
@@ -9850,7 +9896,7 @@ __global__ void compute_loss_kernel_train_nerf_slam_mgl(
 		for (uint32_t j=0; j < compacted_numsteps; ++j) {
 			const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
  	       	const vec3 pos = unwarp_position(coords_in.ptr->pos.p, aabb);
-			const float dt = unwarp_dt(coords_in.ptr->dt);
+			const float dt = unwarp_dt(coords_in.ptr->dt, nerf_steps);
 			float cur_depth = distance(pos, ray_o);
 			float density = network_to_density(float(local_network_output[3]), density_activation);
 
@@ -10024,7 +10070,7 @@ __global__ void compute_loss_kernel_train_nerf_slam_mgl(
 		const vec3 pos = unwarp_position(coord_in->pos.p, aabb);
 		float depth = distance(pos, ray_o);
 
-		float dt = unwarp_dt(coord_in->dt);
+		float dt = unwarp_dt(coord_in->dt, nerf_steps);
 		const tcnn::vector_t<tcnn::network_precision_t, 4> local_network_output = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)network_output;
 		const vec3 rgb = network_to_rgb_vec(local_network_output, rgb_activation);
 		const float density = network_to_density(float(local_network_output[3]), density_activation);
@@ -10235,7 +10281,8 @@ void Testbed::train_nerf_slam_tracking_step_mgl_coarse_to_fine(uint32_t target_b
 			indice_image_for_tracking_pose_gpu.data(),
 			sample_away_from_border_margin,
 			m_tracking_max_grid_level,
-			m_do_multi_pos_encoding
+			m_do_multi_pos_encoding,
+			m_nerf_steps
 		);
 
 
@@ -10318,7 +10365,8 @@ void Testbed::train_nerf_slam_tracking_step_mgl_coarse_to_fine(uint32_t target_b
 			indice_image_for_tracking_pose_gpu.data(),
 			sample_away_from_border_margin,
 			m_nerf.training.use_depth_var_in_tracking_loss,
-			m_tracking_max_grid_level
+			m_tracking_max_grid_level,
+			m_nerf_steps
 		);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
@@ -10694,7 +10742,8 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 			density_grid_positions,
 			density_grid_indices,
 			m_nerf.max_cascade+1,
-			-0.01f
+			-0.01f,
+			m_nerf_steps
 		);
 		m_nerf.training.density_grid_rng.advance();
 
@@ -10707,7 +10756,8 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 			density_grid_positions+n_uniform_density_grid_samples,
 			density_grid_indices+n_uniform_density_grid_samples,
 			m_nerf.max_cascade+1,
-			NERF_MIN_OPTICAL_THICKNESS()
+			NERF_MIN_OPTICAL_THICKNESS(),
+			m_nerf_steps
 		);
 		m_nerf.training.density_grid_rng.advance();
 
@@ -10723,7 +10773,7 @@ void Testbed::update_density_grid_nerf_ba(float decay, uint32_t n_uniform_densit
 			m_nerf_network->density(stream, density_grid_position_matrix, density_matrix, false);
 		}
 
-		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta);
+		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta, m_nerf_steps);
 		linear_kernel(ema_grid_samples_nerf, 0, stream, n_elements, decay, m_nerf.density_grid_ema_step, m_nerf.density_grid.data(), density_grid_tmp);
 
 		++m_nerf.density_grid_ema_step;
@@ -10863,7 +10913,8 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 			density_grid_positions,
 			density_grid_indices,
 			m_nerf.max_cascade+1,
-			-0.01f
+			-0.01f,
+			m_nerf_steps
 		);
 		m_nerf.training.density_grid_rng.advance();
 
@@ -10876,7 +10927,8 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 			density_grid_positions+n_uniform_density_grid_samples,
 			density_grid_indices+n_uniform_density_grid_samples,
 			m_nerf.max_cascade+1,
-			NERF_MIN_OPTICAL_THICKNESS()
+			NERF_MIN_OPTICAL_THICKNESS(),
+			m_nerf_steps
 		);
 		m_nerf.training.density_grid_rng.advance();
 
@@ -10894,7 +10946,7 @@ void Testbed::update_density_grid_nerf_mapping(float decay, uint32_t n_uniform_d
 
 		linear_kernel(splat_grid_samples_nerf_max_nearest_neighbor, 0, stream, 
 						n_density_grid_samples, density_grid_indices, mlp_out, density_grid_tmp, 
-						m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta);
+						m_nerf.rgb_activation, m_nerf.density_activation, m_use_volsdf_in_nerf, m_use_stylesdf_in_nerf, m_use_coslam_sdf_in_nerf, m_nerf.training.volsdf_beta, m_nerf_steps);
 		linear_kernel(ema_grid_samples_nerf, 0, stream, n_elements, decay, m_nerf.density_grid_ema_step, m_nerf.density_grid.data(), density_grid_tmp);
 
 		++m_nerf.density_grid_ema_step;
@@ -11557,7 +11609,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		m_nerf.training.dt_for_regular_sampling,
 		m_nerf.training.dt_for_depth_guided_sampling,
 		m_nerf.training.truncation_distance_for_depth_guided_sampling,
-		m_do_multi_pos_encoding
+		m_do_multi_pos_encoding,
+		m_nerf_steps
 	);
 
 
@@ -11642,7 +11695,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 			m_add_DSnerf_loss,
 		    m_nerf.training.DS_nerf_supervision_depth_sigma,
 			m_add_free_space_loss,
-			m_nerf.training.free_space_supervision_distance
+			m_nerf.training.free_space_supervision_distance,
+			m_nerf_steps
 		);
 
 
@@ -11857,7 +11911,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_with_gaussian_pyramid(uint3
 		m_nerf.training.DS_nerf_supervision_sech2_int_B,
 		m_add_free_space_loss,
 		m_nerf.training.free_space_supervision_lambda,
-		m_nerf.training.free_space_supervision_distance
+		m_nerf.training.free_space_supervision_distance,
+		m_nerf_steps
 	);
 
 	fill_rollover_and_rescale<network_precision_t><<<n_blocks_linear(target_batch_size*padded_output_width), n_threads_linear, 0, stream>>>(
@@ -12059,7 +12114,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t
     		m_nerf.training.idx_images_for_mapping_gpu.data(),
 			sample_away_from_border_margin,
 			m_tracking_max_grid_level,
-			m_do_multi_pos_encoding
+			m_do_multi_pos_encoding,
+			m_nerf_steps
 		);
 
 	//DEBUG
@@ -12139,7 +12195,8 @@ void Testbed::train_nerf_slam_bundle_adjustment_step_mgl_coarse_to_fine(uint32_t
     		m_nerf.training.idx_images_for_mapping_gpu.data(),
 			sample_away_from_border_margin,
 			m_nerf.training.use_depth_var_in_tracking_loss,
-			m_tracking_max_grid_level
+			m_tracking_max_grid_level,
+			m_nerf_steps
 		);
 
 

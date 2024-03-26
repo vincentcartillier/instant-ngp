@@ -174,7 +174,8 @@ public:
 			float cone_angle_constant,
 			ERenderMode render_mode,
 			cudaStream_t stream,
-			bool use_sdf_in_nerf
+			bool use_sdf_in_nerf,
+			const uint32_t nerf_steps
 		);
 
 		uint32_t trace(
@@ -208,7 +209,8 @@ public:
             float sdf_beta,
 			//Custom Ray marching
 			const bool use_custom_ray_marching,
-			const float dt_for_regular_sampling
+			const float dt_for_regular_sampling,
+			const uint32_t nerf_steps
 		);
 
 		void enlarge(size_t n_elements, uint32_t padded_output_width, uint32_t n_extra_dims, cudaStream_t stream);
@@ -1009,6 +1011,9 @@ public:
 	// We basically replace the dir encoding with the xyz -> then need an appropriate PosEncoding
 	// And an empty dir encoding (since no dir info is used)
 	bool m_do_multi_pos_encoding=false;
+
+	//max number of samples per ray per unit lengths (cf NERF_STEPS() cuda function)
+	uint32_t m_nerf_steps=1024;
 
 	bool m_use_anti_aliasing_in_meshing=false;	
 	uint32_t m_n_elements_per_vertex_during_meshing_with_anti_aliasing=4;
